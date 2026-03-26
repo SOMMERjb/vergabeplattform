@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { fetchTedTenders } from '@/lib/fetchers/ted';
 import { fetchRssTenders, RSS_SOURCES } from '@/lib/fetchers/rss';
+import { fetchDoeTenders } from '@/lib/fetchers/doe';
 import { DEFAULT_KEYWORDS, FRAME_LIGHTING_CPV_CODES } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -11,9 +12,10 @@ export async function GET() {
 
   const startTime = Date.now();
 
-  const [tedResult, rssResult] = await Promise.allSettled([
+  const [tedResult, rssResult, doeResult] = await Promise.allSettled([
     fetchTedTenders(keywords, cpvCodes),
     fetchRssTenders(keywords, cpvCodes),
+    fetchDoeTenders(keywords, cpvCodes),
   ]);
 
   const ted =
@@ -52,14 +54,25 @@ export async function GET() {
           sample: [],
         }));
 
+  const doe =
+    doeResult.status === 'fulfilled'
+      ? {
+          ok: !doeResult.value.error,
+          count: doeResult.value.tenders.length,
+          error: doeResult.value.error ?? null,
+          sample: doeResult.value.tenders.slice(0, 2).map((t) => ({
+            title: t.title,
+            date: t.published_date,
+          })),
+        }
+      : { ok: false, count: 0, error: String(doeResult.reason), sample: [] };
+
   return NextResponse.json({
     timestamp: new Date().toISOString(),
     durationMs: Date.now() - startTime,
     ted,
     rss,
-    config: {
-      keywords,
-      cpvCodes,
-    },
+    doe,
+    config: { keywords, cpvCodes },
   });
 }

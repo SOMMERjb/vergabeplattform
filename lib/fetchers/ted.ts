@@ -149,25 +149,28 @@ export async function fetchTedTenders(
     dateFrom.setDate(dateFrom.getDate() - 14);
     const dateFromStr = dateFrom.toISOString().split('T')[0];
 
-    // Build CPV query part
+    // Build CPV query part – use 5-digit prefix wildcard
     let cpvQueryPart = '';
     if (cpvCodes.length > 0) {
-      // Use 5-digit prefix match for each CPV code
       const cpvParts = [...new Set(cpvCodes.map((c) => c.substring(0, 5)))]
         .map((prefix) => `CPV=${prefix}*`)
         .join(' OR ');
       cpvQueryPart = ` AND (${cpvParts})`;
-    } else if (keywords.length > 0) {
-      const kwParts = keywords.slice(0, 5).map((k) => `TE=${encodeURIComponent(k)}`).join(' OR ');
-      cpvQueryPart = ` AND (${kwParts})`;
     }
 
-    const query = `ND-CountryCode=DEU AND PD>=${dateFromStr}${cpvQueryPart}`;
+    // TED v3 query language: ND-CountryCode for country, PD for publication date
+    const query = `ND-CountryCode=DEU${cpvQueryPart}`;
 
     const body = {
       query,
-      scope: 3, // 3 = all active notices
-      onlyLatestVersions: true,
+      // scope must be a string enum: "ACTIVE" = open notices (deadline not passed),
+      // "ALL" = all notices from last 10 years. Do NOT pass as integer.
+      scope: 'ACTIVE',
+      filters: {
+        publicationDateRange: {
+          startDate: dateFromStr,
+        },
+      },
       page: 1,
       limit: 50,
     };

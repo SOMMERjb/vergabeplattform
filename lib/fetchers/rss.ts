@@ -27,51 +27,13 @@ export interface RssSource {
 
 export const RSS_SOURCES: RssSource[] = [
   {
-    id: 'dtvp',
-    name: 'DTVP',
-    url: 'https://www.dtvp.de/Center/notice/rss',
+    // Official German federal procurement portal – confirmed working RSS feed
+    // Source: https://www.service.bund.de/Content/DE/Service/RSS/rss_node.html
+    id: 'service-bund',
+    name: 'service.bund.de',
+    url: 'https://www.service.bund.de/Content/Globals/Functions/RSSFeed/RSSGenerator_Ausschreibungen.xml',
     region: 'Deutschland',
     bundesland: null,
-    active: true,
-  },
-  {
-    id: 'bund',
-    name: 'Bund.de',
-    url: 'https://www.bund.de/SiteGlobals/Functions/RSSFeed/RSSNewContracts/RSSNewContracts_Formular.html',
-    region: 'Deutschland',
-    bundesland: null,
-    active: true,
-  },
-  {
-    id: 'vergabe-nrw',
-    name: 'Vergabe.NRW',
-    url: 'https://www.vergabe.nrw.de/VMPSatellite/satellite.rss',
-    region: 'Nordrhein-Westfalen',
-    bundesland: 'Nordrhein-Westfalen',
-    active: true,
-  },
-  {
-    id: 'had',
-    name: 'HAD Hessen',
-    url: 'https://had.de/rss.xml',
-    region: 'Hessen',
-    bundesland: 'Hessen',
-    active: true,
-  },
-  {
-    id: 'vmp-berlin',
-    name: 'Vergabemarktplatz Berlin',
-    url: 'https://www.vergabemarktplatz.de/VMPCenter/satellite.rss',
-    region: 'Berlin',
-    bundesland: 'Berlin',
-    active: true,
-  },
-  {
-    id: 'evergabe-bw',
-    name: 'eVergabe BW',
-    url: 'https://www.vergabe.bund.de/SiteGlobals/Functions/RSSFeed/RSSNewContracts/RSSNewContracts_Formular.html',
-    region: 'Baden-Württemberg',
-    bundesland: 'Baden-Württemberg',
     active: true,
   },
 ];

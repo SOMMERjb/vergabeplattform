@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchTedTenders } from '@/lib/fetchers/ted';
 import { fetchRssTenders } from '@/lib/fetchers/rss';
+import { fetchDoeTenders } from '@/lib/fetchers/doe';
 import { generateDemoTenders } from '@/lib/fetchers/demo-data';
 import { getCacheKey, getCached, setCache } from '@/lib/cache';
 import { Tender } from '@/lib/types';
@@ -41,9 +42,10 @@ export async function GET(request: NextRequest) {
   }
 
   // Fetch from all sources in parallel
-  const [tedResult, rssResult] = await Promise.allSettled([
+  const [tedResult, rssResult, doeResult] = await Promise.allSettled([
     fetchTedTenders(keywords, cpvCodes),
     fetchRssTenders(keywords, cpvCodes),
+    fetchDoeTenders(keywords, cpvCodes),
   ]);
 
   const allTenders: Tender[] = [];
@@ -61,7 +63,7 @@ export async function GET(request: NextRequest) {
     sourceStatus.push({ name: 'TED (EU)', count: 0, error: String(tedResult.reason) });
   }
 
-  // RSS results
+  // RSS results (service.bund.de)
   if (rssResult.status === 'fulfilled') {
     allTenders.push(...rssResult.value.tenders);
     for (const sr of rssResult.value.sourceResults) {
@@ -72,7 +74,19 @@ export async function GET(request: NextRequest) {
       });
     }
   } else {
-    sourceStatus.push({ name: 'RSS (alle)', count: 0, error: String(rssResult.reason) });
+    sourceStatus.push({ name: 'service.bund.de', count: 0, error: String(rssResult.reason) });
+  }
+
+  // Datenservice Öffentlicher Einkauf (oeffentlichevergabe.de)
+  if (doeResult.status === 'fulfilled') {
+    allTenders.push(...doeResult.value.tenders);
+    sourceStatus.push({
+      name: 'Öffentlicher Einkauf',
+      count: doeResult.value.tenders.length,
+      error: doeResult.value.error,
+    });
+  } else {
+    sourceStatus.push({ name: 'Öffentlicher Einkauf', count: 0, error: String(doeResult.reason) });
   }
 
   // Deduplicate by URL
