@@ -5,6 +5,8 @@ import { generateDemoTenders } from '@/lib/fetchers/demo-data';
 import { getCacheKey, getCached, setCache } from '@/lib/cache';
 import { Tender } from '@/lib/types';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
 
@@ -15,7 +17,12 @@ export async function GET(request: NextRequest) {
 
   if (useDemo) {
     const demoTenders = generateDemoTenders();
-    return NextResponse.json({ tenders: demoTenders, source: 'demo', total: demoTenders.length });
+    return NextResponse.json({
+      tenders: demoTenders,
+      source: 'demo',
+      total: demoTenders.length,
+      source_status: [],
+    });
   }
 
   const cacheKey = getCacheKey(keywords, cpvCodes);
@@ -28,20 +35,45 @@ export async function GET(request: NextRequest) {
         source: 'cache',
         total: cached.length,
         cached_at: new Date().toISOString(),
+        source_status: [],
       });
     }
   }
 
   // Fetch from all sources in parallel
-  const [tedTenders, rssTenders] = await Promise.allSettled([
+  const [tedResult, rssResult] = await Promise.allSettled([
     fetchTedTenders(keywords, cpvCodes),
     fetchRssTenders(keywords, cpvCodes),
   ]);
 
   const allTenders: Tender[] = [];
+  const sourceStatus: Array<{ name: string; count: number; error?: string }> = [];
 
-  if (tedTenders.status === 'fulfilled') allTenders.push(...tedTenders.value);
-  if (rssTenders.status === 'fulfilled') allTenders.push(...rssTenders.value);
+  // TED results
+  if (tedResult.status === 'fulfilled') {
+    allTenders.push(...tedResult.value.tenders);
+    sourceStatus.push({
+      name: 'TED (EU)',
+      count: tedResult.value.tenders.length,
+      error: tedResult.value.error,
+    });
+  } else {
+    sourceStatus.push({ name: 'TED (EU)', count: 0, error: String(tedResult.reason) });
+  }
+
+  // RSS results
+  if (rssResult.status === 'fulfilled') {
+    allTenders.push(...rssResult.value.tenders);
+    for (const sr of rssResult.value.sourceResults) {
+      sourceStatus.push({
+        name: sr.source.name,
+        count: sr.tenders.length,
+        error: sr.error,
+      });
+    }
+  } else {
+    sourceStatus.push({ name: 'RSS (alle)', count: 0, error: String(rssResult.reason) });
+  }
 
   // Deduplicate by URL
   const seen = new Set<string>();
@@ -53,7 +85,9 @@ export async function GET(request: NextRequest) {
   });
 
   // Sort by publication date desc
-  deduped.sort((a, b) => new Date(b.published_date).getTime() - new Date(a.published_date).getTime());
+  deduped.sort(
+    (a, b) => new Date(b.published_date).getTime() - new Date(a.published_date).getTime()
+  );
 
   setCache(cacheKey, deduped);
 
@@ -62,9 +96,6 @@ export async function GET(request: NextRequest) {
     source: 'live',
     total: deduped.length,
     fetched_at: new Date().toISOString(),
-    sources: {
-      ted: tedTenders.status === 'fulfilled' ? tedTenders.value.length : 0,
-      rss: rssTenders.status === 'fulfilled' ? rssTenders.value.length : 0,
-    },
+    source_status: sourceStatus,
   });
 }

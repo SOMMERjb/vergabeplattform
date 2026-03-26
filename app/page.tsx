@@ -5,7 +5,7 @@ import { Tender, FilterState, DEFAULT_KEYWORDS, FRAME_LIGHTING_CPV_CODES } from 
 import TenderCard from '@/components/TenderCard';
 import TenderDetail from '@/components/TenderDetail';
 import FilterPanel from '@/components/FilterPanel';
-import StatsBar from '@/components/StatsBar';
+import StatsBar, { SourceStatus } from '@/components/StatsBar';
 import { isToday, parseISO } from 'date-fns';
 import { format } from 'date-fns';
 import { de } from 'date-fns/locale';
@@ -58,6 +58,7 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(false);
   const [lastFetched, setLastFetched] = useState<string | null>(null);
   const [isDemo, setIsDemo] = useState(true);
+  const [sourceStatus, setSourceStatus] = useState<SourceStatus[]>([]);
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<'date' | 'value' | 'deadline'>('date');
   const [showFilters, setShowFilters] = useState(true);
@@ -82,6 +83,7 @@ export default function Dashboard() {
         const data = await res.json();
         setAllTenders(data.tenders || []);
         setLastFetched(data.fetched_at || data.cached_at || new Date().toISOString());
+        if (data.source_status) setSourceStatus(data.source_status);
       } catch (err) {
         setError('Fehler beim Laden der Vergaben. Bitte versuche es erneut.');
         console.error(err);
@@ -173,7 +175,8 @@ export default function Dashboard() {
             lastFetched={lastFetched}
             onRefresh={() => fetchTenders(isDemo, true)}
             isDemo={isDemo}
-            onToggleDemo={() => setIsDemo(!isDemo)}
+            onToggleDemo={() => { setIsDemo(!isDemo); setSourceStatus([]); }}
+            sourceStatus={sourceStatus}
           />
         </div>
 

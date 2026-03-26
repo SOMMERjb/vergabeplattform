@@ -1,207 +1,262 @@
 import { Tender } from '../types';
 
 interface RssItem {
-  title?: string[];
-  description?: string[];
-  link?: string[];
-  pubDate?: string[];
-  'dc:date'?: string[];
-  guid?: string[] | Array<{ _: string; $: { isPermaLink: string } }>;
-  category?: string[];
-  'vergabe:auftraggeber'?: string[];
-  'vergabe:wertVon'?: string[];
-  'vergabe:wertBis'?: string[];
-  'vergabe:cpv'?: string[];
-  'vergabe:region'?: string[];
-  [key: string]: unknown;
+  title?: string;
+  description?: string;
+  link?: string;
+  pubDate?: string;
+  guid?: string;
+  category?: string;
+  // German procurement extensions
+  'vergabe:auftraggeber'?: string;
+  'vergabe:wertVon'?: string;
+  'vergabe:wertBis'?: string;
+  'vergabe:cpv'?: string;
+  'vergabe:region'?: string;
+  [key: string]: string | undefined;
 }
 
-interface RssSource {
+export interface RssSource {
+  id: string;
   name: string;
   url: string;
-  region?: string;
-  bundesland?: string | null;
+  region: string;
+  bundesland: string | null;
+  active: boolean;
 }
 
-const RSS_SOURCES: RssSource[] = [
+export const RSS_SOURCES: RssSource[] = [
   {
-    name: 'DTVP - Deutsches Vergabeportal',
-    url: 'https://www.dtvp.de/Center/notice/NoticeSearch/rss?type=1',
+    id: 'dtvp',
+    name: 'DTVP',
+    url: 'https://www.dtvp.de/Center/notice/rss',
     region: 'Deutschland',
     bundesland: null,
+    active: true,
   },
   {
+    id: 'bund',
+    name: 'Bund.de',
+    url: 'https://www.bund.de/SiteGlobals/Functions/RSSFeed/RSSNewContracts/RSSNewContracts_Formular.html',
+    region: 'Deutschland',
+    bundesland: null,
+    active: true,
+  },
+  {
+    id: 'vergabe-nrw',
     name: 'Vergabe.NRW',
     url: 'https://www.vergabe.nrw.de/VMPSatellite/satellite.rss',
     region: 'Nordrhein-Westfalen',
     bundesland: 'Nordrhein-Westfalen',
+    active: true,
   },
   {
-    name: 'Bund.de - Öffentliche Aufträge',
-    url: 'https://www.bund.de/SiteGlobals/Functions/RSSFeed/RSSNewContracts/RSSNewContracts_Formular.html',
-    region: 'Deutschland',
-    bundesland: null,
-  },
-  {
-    name: 'Vergabemarktplatz Berlin-Brandenburg',
-    url: 'https://www.vergabemarktplatz.de/VMPCenter/satellite.rss',
-    region: 'Berlin',
-    bundesland: 'Berlin',
-  },
-  {
-    name: 'HAD - Hessische Ausschreibungsdatenbank',
+    id: 'had',
+    name: 'HAD Hessen',
     url: 'https://had.de/rss.xml',
     region: 'Hessen',
     bundesland: 'Hessen',
+    active: true,
+  },
+  {
+    id: 'vmp-berlin',
+    name: 'Vergabemarktplatz Berlin',
+    url: 'https://www.vergabemarktplatz.de/VMPCenter/satellite.rss',
+    region: 'Berlin',
+    bundesland: 'Berlin',
+    active: true,
+  },
+  {
+    id: 'evergabe-bw',
+    name: 'eVergabe BW',
+    url: 'https://www.vergabe.bund.de/SiteGlobals/Functions/RSSFeed/RSSNewContracts/RSSNewContracts_Formular.html',
+    region: 'Baden-Württemberg',
+    bundesland: 'Baden-Württemberg',
+    active: true,
   },
 ];
 
-async function parseRss(xmlText: string): Promise<RssItem[]> {
-  // Simple XML parser for RSS feeds without external dependencies
-  const items: RssItem[] = [];
+// ── XML helpers ──────────────────────────────────────────────────────────────
 
-  // Extract all <item> blocks
-  const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi;
-  let match;
+/** Extract text content from a single XML tag (handles CDATA) */
+function extractTag(xml: string, tag: string): string | undefined {
+  // Try CDATA form first, then plain text
+  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const cdataRe = new RegExp(
+    `<${escapedTag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${escapedTag}>`,
+    'i'
+  );
+  const plainRe = new RegExp(
+    `<${escapedTag}[^>]*>([\\s\\S]*?)<\\/${escapedTag}>`,
+    'i'
+  );
+  const m = cdataRe.exec(xml) ?? plainRe.exec(xml);
+  return m ? m[1].trim() : undefined;
+}
 
-  while ((match = itemRegex.exec(xmlText)) !== null) {
-    const itemXml = match[1];
-    const item: RssItem = {};
-
-    // Extract common fields
-    const fields = [
-      'title', 'description', 'link', 'pubDate', 'guid',
-      'category', 'dc:date',
-      'vergabe:auftraggeber', 'vergabe:wertVon', 'vergabe:wertBis',
-      'vergabe:cpv', 'vergabe:region',
-    ];
-
-    for (const field of fields) {
-      const escapedField = field.replace(':', ':');
-      const regex = new RegExp(`<${escapedField}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${escapedField}>|<${escapedField}[^>]*>([\\s\\S]*?)<\\/${escapedField}>`, 'i');
-      const fieldMatch = regex.exec(itemXml);
-      if (fieldMatch) {
-        item[field] = [fieldMatch[1] || fieldMatch[2] || ''];
-      }
-    }
-
-    if (item.title || item.link) {
-      items.push(item);
-    }
+function parseItem(itemXml: string): RssItem {
+  const tags: string[] = [
+    'title', 'description', 'link', 'pubDate', 'guid', 'category',
+    'vergabe:auftraggeber', 'vergabe:wertVon', 'vergabe:wertBis',
+    'vergabe:cpv', 'vergabe:region',
+    // Atom / Dublin Core variants
+    'dc:date', 'updated', 'summary', 'content',
+  ];
+  const item: RssItem = {};
+  for (const tag of tags) {
+    const val = extractTag(itemXml, tag);
+    if (val !== undefined) item[tag] = val;
   }
+  // Fallback: use <dc:date> or <updated> as pubDate
+  if (!item.pubDate) {
+    item.pubDate = item['dc:date'] ?? item['updated'];
+  }
+  return item;
+}
 
+function parseRssItems(xml: string): RssItem[] {
+  const items: RssItem[] = [];
+  const re = /<item[^>]*>([\s\S]*?)<\/item>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml)) !== null) {
+    const item = parseItem(m[1]);
+    if (item.title || item.link) items.push(item);
+  }
+  // Also handle Atom <entry> elements
+  const entryRe = /<entry[^>]*>([\s\S]*?)<\/entry>/gi;
+  while ((m = entryRe.exec(xml)) !== null) {
+    const item = parseItem(m[1]);
+    if (item.title || item.link) items.push(item);
+  }
   return items;
 }
 
-function extractGuid(item: RssItem): string {
-  const guid = item.guid;
-  if (!guid || guid.length === 0) return Math.random().toString(36);
-  const g = guid[0];
-  if (typeof g === 'string') return g;
-  if (typeof g === 'object' && '_' in g) return g._;
-  return String(g);
+// ── Per-source fetcher ───────────────────────────────────────────────────────
+
+export interface SourceResult {
+  source: RssSource;
+  tenders: Tender[];
+  itemCount: number;
+  error?: string;
+  httpStatus?: number;
 }
 
-function matchesKeywords(text: string, keywords: string[]): string[] {
-  return keywords.filter((kw) => text.toLowerCase().includes(kw.toLowerCase()));
-}
-
-function matchesCpv(cpvField: string, cpvCodes: string[]): boolean {
-  if (!cpvField || cpvCodes.length === 0) return false;
-  return cpvCodes.some((code) => cpvField.includes(code.substring(0, 5)));
-}
-
-async function fetchRssSource(
+async function fetchSource(
   source: RssSource,
-  keywords: string[],
-  cpvCodes: string[]
-): Promise<Tender[]> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+  keywords: string[]
+): Promise<SourceResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
 
-    const response = await fetch(source.url, {
+  try {
+    const res = await fetch(source.url, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'VergabeDashboard/1.0 (+https://vergabe.local)',
-        Accept: 'application/rss+xml, application/xml, text/xml, */*',
+        'User-Agent': 'Mozilla/5.0 VergabeDashboard/1.0',
+        Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
       },
-      next: { revalidate: 3600 },
+      cache: 'no-store',
     }).finally(() => clearTimeout(timeout));
 
-    if (!response.ok) {
-      console.warn(`RSS fetch failed for ${source.name}: ${response.status}`);
-      return [];
+    if (!res.ok) {
+      return {
+        source,
+        tenders: [],
+        itemCount: 0,
+        error: `HTTP ${res.status}`,
+        httpStatus: res.status,
+      };
     }
 
-    const xmlText = await response.text();
-    const items = await parseRss(xmlText);
+    const xml = await res.text();
+    const items = parseRssItems(xml);
 
-    const tenders: Tender[] = [];
+    const tenders: Tender[] = items.map((item, idx) => {
+      const title = item.title?.replace(/\s+/g, ' ').trim() ?? 'Ohne Titel';
+      const description = (item.description ?? item.summary ?? item.content ?? '')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const link = item.link ?? '';
+      const pubDate = item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString();
 
-    for (const item of items) {
-      const title = item.title?.[0] || '';
-      const description = item.description?.[0] || '';
-      const link = item.link?.[0] || '';
-      const pubDate = item.pubDate?.[0] || item['dc:date']?.[0] || new Date().toISOString();
-      const cpvField = item['vergabe:cpv']?.[0] || '';
+      const cpvRaw = item['vergabe:cpv'] ?? '';
+      const valueStr = item['vergabe:wertVon'] ?? '';
+      const estimatedValue = valueStr
+        ? parseFloat(valueStr.replace(/[^0-9.]/g, '')) || null
+        : null;
 
-      const fullText = `${title} ${description}`;
-      const matched = matchesKeywords(fullText, keywords);
-      const cpvMatch = matchesCpv(cpvField, cpvCodes);
+      const fullText = `${title} ${description}`.toLowerCase();
+      const matched = keywords.filter((kw) => fullText.includes(kw.toLowerCase()));
 
-      // Only include if matches keywords or CPV codes
-      if (matched.length === 0 && !cpvMatch && keywords.length > 0 && cpvCodes.length > 0) {
-        continue;
-      }
-
-      const valueStr = item['vergabe:wertVon']?.[0] || '';
-      const estimatedValue = valueStr ? parseFloat(valueStr.replace(/[^0-9.]/g, '')) || null : null;
-
-      tenders.push({
-        id: `rss-${source.name.replace(/\s/g, '_')}-${extractGuid(item)}`,
-        title: title.trim() || 'Ohne Titel',
-        description: description.replace(/<[^>]+>/g, '').trim(),
-        contracting_authority: item['vergabe:auftraggeber']?.[0] || 'Unbekannte Behörde',
-        published_date: new Date(pubDate).toISOString(),
+      return {
+        id: `rss-${source.id}-${item.guid ?? link ?? idx}`,
+        title,
+        description,
+        contracting_authority: item['vergabe:auftraggeber'] ?? extractAuthority(title, description),
+        published_date: pubDate,
         deadline: null,
-        estimated_value: isNaN(estimatedValue ?? NaN) ? null : estimatedValue,
+        estimated_value: estimatedValue !== null && !isNaN(estimatedValue) ? estimatedValue : null,
         currency: 'EUR',
-        cpv_codes: cpvField ? [cpvField] : [],
+        cpv_codes: cpvRaw ? [cpvRaw] : [],
         cpv_descriptions: [],
-        region: item['vergabe:region']?.[0] || source.region || 'Deutschland',
-        bundesland: source.bundesland ?? null,
+        region: item['vergabe:region'] ?? source.region,
+        bundesland: source.bundesland,
         source_platform: source.name,
         source_url: link,
         tender_type: 'Ausschreibung',
         keywords_matched: matched,
-      });
-    }
+      };
+    });
 
-    return tenders;
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      console.warn(`Timeout fetching RSS from ${source.name}`);
-    } else {
-      console.error(`Error fetching RSS from ${source.name}:`, error);
-    }
-    return [];
+    return { source, tenders, itemCount: items.length };
+  } catch (err) {
+    clearTimeout(timeout);
+    const msg = err instanceof Error ? err.message : String(err);
+    const isTimeout = msg.includes('abort') || msg.includes('timeout');
+    return {
+      source,
+      tenders: [],
+      itemCount: 0,
+      error: isTimeout ? 'Timeout (12s)' : msg.slice(0, 120),
+    };
   }
 }
 
-export async function fetchRssTenders(keywords: string[], cpvCodes: string[]): Promise<Tender[]> {
-  const results = await Promise.allSettled(
-    RSS_SOURCES.map((source) => fetchRssSource(source, keywords, cpvCodes))
+/** Heuristic: extract authority name from title/description if not in custom field */
+function extractAuthority(title: string, description: string): string {
+  // Common patterns: "Vergabe: XYZ – [Behörde]", "Auftraggeber: XYZ"
+  const patterns = [
+    /auftraggeber[:\s]+([^,\n]{3,60})/i,
+    /vergabestelle[:\s]+([^,\n]{3,60})/i,
+    /–\s*([^–\n]{5,60})$/i,
+  ];
+  const text = `${title} ${description}`;
+  for (const re of patterns) {
+    const m = re.exec(text);
+    if (m) return m[1].trim();
+  }
+  return 'Öffentlicher Auftraggeber';
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+export async function fetchRssTenders(
+  keywords: string[],
+  _cpvCodes: string[] // CPV matching is done client-side for RSS; keep param for API compat
+): Promise<{ tenders: Tender[]; sourceResults: SourceResult[] }> {
+  const activeSources = RSS_SOURCES.filter((s) => s.active);
+
+  const settled = await Promise.allSettled(
+    activeSources.map((s) => fetchSource(s, keywords))
   );
 
-  const tenders: Tender[] = [];
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      tenders.push(...result.value);
-    }
-  }
+  const sourceResults: SourceResult[] = settled.map((r, i) =>
+    r.status === 'fulfilled'
+      ? r.value
+      : { source: activeSources[i], tenders: [], itemCount: 0, error: String(r.reason) }
+  );
 
-  return tenders;
+  const tenders = sourceResults.flatMap((r) => r.tenders);
+  return { tenders, sourceResults };
 }
-
-export { RSS_SOURCES };

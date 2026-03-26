@@ -2,172 +2,255 @@ import { Tender } from '../types';
 
 const TED_API_BASE = 'https://api.ted.europa.eu/v3';
 
-interface TedNotice {
+// TED API v3 response shape – fields vary based on request, so everything is optional
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type TedField = any;
+
+interface TedNoticeRaw {
   noticeId?: string;
   id?: string;
-  title?: Record<string, string> | string;
-  description?: Record<string, string> | string;
-  buyerName?: Record<string, string> | string;
   publicationDate?: string;
   deadlineDate?: string | null;
-  estimatedValue?: { amount?: number; currency?: string } | null;
-  cpvCode?: { code?: string; description?: Record<string, string> | string } | null;
-  cpvCodes?: Array<{ code?: string; description?: Record<string, string> | string }>;
-  placeOfPerformance?: {
-    countryCode?: string;
-    nutsCodes?: string[];
-  } | null;
-  noticeUrl?: string;
+  links?: { tedUrl?: string; noticeUrl?: string };
+  // top-level flattened fields (returned when no explicit fields list is sent)
+  title?: TedField;
+  description?: TedField;
+  summary?: TedField;
+  shortDescription?: TedField;
+  buyerName?: TedField;
+  contractingAuthorityName?: TedField;
+  cpvCode?: TedField;
+  cpvCodes?: TedField;
+  estimatedValue?: TedField;
+  totalEstimatedValue?: TedField;
+  nutsCodes?: TedField;
+  nutsCode?: TedField;
+  placeOfPerformance?: TedField;
+  noticeType?: string;
+  type?: string;
   documentType?: string;
-  contractType?: string;
+  // eForms BT-code fields (returned when fields are specified)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
 }
 
-function extractText(
-  field: Record<string, string> | string | undefined | null
-): string {
+function pickText(field: TedField): string {
   if (!field) return '';
   if (typeof field === 'string') return field;
-  return field['DEU'] || field['deu'] || field['de'] || Object.values(field)[0] || '';
+  if (typeof field === 'object') {
+    // Multilingual object: {"DEU": "...", "ENG": "..."}
+    return (
+      field['DEU'] ||
+      field['deu'] ||
+      field['de'] ||
+      field['DE'] ||
+      field['ENG'] ||
+      field['eng'] ||
+      field['en'] ||
+      (Array.isArray(field) ? field[0] : null) ||
+      Object.values(field).find((v) => typeof v === 'string') ||
+      ''
+    );
+  }
+  return String(field);
 }
 
-function nutsToRegion(nutsCodes: string[]): { region: string; bundesland: string | null } {
-  if (!nutsCodes || nutsCodes.length === 0) return { region: 'Deutschland', bundesland: null };
-
-  const code = nutsCodes[0];
-  const bundeslandMap: Record<string, string> = {
-    DE1: 'Baden-Württemberg',
-    DE2: 'Bayern',
-    DE3: 'Berlin',
-    DE4: 'Brandenburg',
-    DE5: 'Bremen',
-    DE6: 'Hamburg',
-    DE7: 'Hessen',
-    DE8: 'Mecklenburg-Vorpommern',
-    DE9: 'Niedersachsen',
-    DEA: 'Nordrhein-Westfalen',
-    DEB: 'Rheinland-Pfalz',
-    DEC: 'Saarland',
-    DED: 'Sachsen',
-    DEE: 'Sachsen-Anhalt',
-    DEF: 'Schleswig-Holstein',
-    DEG: 'Thüringen',
-  };
-
-  const prefix = code.substring(0, 3);
-  const bundesland = bundeslandMap[prefix] || null;
-  return { region: bundesland || 'Deutschland', bundesland };
+function pickNumber(field: TedField): number | null {
+  if (!field) return null;
+  if (typeof field === 'number') return field;
+  if (typeof field === 'object') {
+    return (
+      field.amount ??
+      field.value ??
+      field.estimatedTotalValue ??
+      field.netValue ??
+      null
+    );
+  }
+  const parsed = parseFloat(String(field).replace(/[^0-9.]/g, ''));
+  return isNaN(parsed) ? null : parsed;
 }
 
-export async function fetchTedTenders(keywords: string[], cpvCodes: string[]): Promise<Tender[]> {
-  try {
-    const tenders: Tender[] = [];
+function pickCpvCodes(notice: TedNoticeRaw): { codes: string[]; descs: string[] } {
+  const raw = notice.cpvCodes ?? notice.cpvCode ?? notice['CPV'] ?? null;
+  if (!raw) return { codes: [], descs: [] };
 
-    // Build query for TED API v3
-    const queryParts: string[] = [];
+  const items = Array.isArray(raw) ? raw : [raw];
+  const codes: string[] = [];
+  const descs: string[] = [];
 
-    // Add Germany filter
-    queryParts.push('ND-RootCountry:(DEU)');
-
-    // Add CPV codes
-    if (cpvCodes.length > 0) {
-      const cpvQuery = cpvCodes.map(c => `CPV:(${c}*)`).join(' OR ');
-      queryParts.push(`(${cpvQuery})`);
-    } else if (keywords.length > 0) {
-      // Use keywords in title/description
-      const kwQuery = keywords.map(k => `TI:(${k})`).join(' OR ');
-      queryParts.push(`(${kwQuery})`);
+  for (const item of items) {
+    if (typeof item === 'string') {
+      codes.push(item);
+    } else if (typeof item === 'object') {
+      const code = item.code ?? item.cpvCode ?? '';
+      const desc = pickText(item.description ?? item.name ?? item.label ?? '');
+      if (code) codes.push(String(code));
+      if (desc) descs.push(desc);
     }
+  }
+  return { codes, descs };
+}
 
-    const query = queryParts.join(' AND ');
+const NUTS_TO_BUNDESLAND: Record<string, string> = {
+  DE1: 'Baden-Württemberg',
+  DE2: 'Bayern',
+  DE3: 'Berlin',
+  DE4: 'Brandenburg',
+  DE5: 'Bremen',
+  DE6: 'Hamburg',
+  DE7: 'Hessen',
+  DE8: 'Mecklenburg-Vorpommern',
+  DE9: 'Niedersachsen',
+  DEA: 'Nordrhein-Westfalen',
+  DEB: 'Rheinland-Pfalz',
+  DEC: 'Saarland',
+  DED: 'Sachsen',
+  DEE: 'Sachsen-Anhalt',
+  DEF: 'Schleswig-Holstein',
+  DEG: 'Thüringen',
+};
 
-    // Get notices from last 7 days
+function resolveBundesland(notice: TedNoticeRaw): { region: string; bundesland: string | null } {
+  const raw =
+    notice.nutsCodes ??
+    notice.nutsCode ??
+    notice.placeOfPerformance?.nutsCodes ??
+    notice.placeOfPerformance?.nutsCode ??
+    null;
+
+  if (!raw) return { region: 'Deutschland', bundesland: null };
+
+  const codes: string[] = Array.isArray(raw) ? raw : [raw];
+  if (codes.length === 0) return { region: 'Deutschland', bundesland: null };
+
+  const prefix = String(codes[0]).substring(0, 3).toUpperCase();
+  const bl = NUTS_TO_BUNDESLAND[prefix] ?? null;
+  return { region: bl ?? 'Deutschland', bundesland: bl };
+}
+
+function noticeUrl(notice: TedNoticeRaw): string {
+  const id = notice.noticeId ?? notice.id ?? '';
+  return (
+    notice.links?.tedUrl ??
+    notice.links?.noticeUrl ??
+    (id ? `https://ted.europa.eu/de/notice/${id}` : 'https://ted.europa.eu')
+  );
+}
+
+export async function fetchTedTenders(
+  keywords: string[],
+  cpvCodes: string[]
+): Promise<{ tenders: Tender[]; error?: string }> {
+  try {
+    // Build a simple, broadly-compatible TED v3 query
+    // Filter: Germany, last 14 days, optional CPV prefix filter
     const dateFrom = new Date();
-    dateFrom.setDate(dateFrom.getDate() - 7);
+    dateFrom.setDate(dateFrom.getDate() - 14);
     const dateFromStr = dateFrom.toISOString().split('T')[0];
 
-    const requestBody = {
+    // Build CPV query part
+    let cpvQueryPart = '';
+    if (cpvCodes.length > 0) {
+      // Use 5-digit prefix match for each CPV code
+      const cpvParts = [...new Set(cpvCodes.map((c) => c.substring(0, 5)))]
+        .map((prefix) => `CPV=${prefix}*`)
+        .join(' OR ');
+      cpvQueryPart = ` AND (${cpvParts})`;
+    } else if (keywords.length > 0) {
+      const kwParts = keywords.slice(0, 5).map((k) => `TE=${encodeURIComponent(k)}`).join(' OR ');
+      cpvQueryPart = ` AND (${kwParts})`;
+    }
+
+    const query = `ND-CountryCode=DEU AND PD>=${dateFromStr}${cpvQueryPart}`;
+
+    const body = {
       query,
-      filters: {
-        publicationDateRange: {
-          startDate: dateFromStr,
-        },
-      },
+      scope: 3, // 3 = all active notices
+      onlyLatestVersions: true,
       page: 1,
       limit: 50,
-      fields: [
-        'ND-PublicationDate',
-        'ND-NoticeTitle',
-        'ND-NoticeType',
-        'ND-RootCountry',
-        'ND-TenderingInformation',
-        'ND-ContractingParty',
-        'ND-LotTenderingInformation',
-        'ND-LotEstimatedValue',
-        'ND-CPVCode',
-        'OPT-130-Lot',
-        'BT-727-Lot',
-        'BT-23-Lot',
-      ],
     };
 
-    const response = await fetch(`${TED_API_BASE}/notices/search`, {
+    const res = await fetch(`${TED_API_BASE}/notices/search`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
+        Accept: 'application/json',
       },
-      body: JSON.stringify(requestBody),
-      next: { revalidate: 3600 },
+      body: JSON.stringify(body),
+      // No Next.js cache – always fresh on demand
+      cache: 'no-store',
     });
 
-    if (!response.ok) {
-      console.error('TED API error:', response.status, await response.text());
-      return [];
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.error(`TED API error ${res.status}:`, errText.slice(0, 300));
+      return { tenders: [], error: `TED HTTP ${res.status}: ${errText.slice(0, 100)}` };
     }
 
-    const data = await response.json();
-    const notices = data.notices || [];
+    const data = await res.json();
+    const notices: TedNoticeRaw[] = data.notices ?? data.results ?? data.items ?? [];
 
-    for (const notice of notices as TedNotice[]) {
-      const nutsCodes = notice.placeOfPerformance?.nutsCodes || [];
-      const { region, bundesland } = nutsToRegion(nutsCodes);
+    if (!Array.isArray(notices)) {
+      console.warn('TED API returned unexpected shape:', JSON.stringify(data).slice(0, 200));
+      return { tenders: [], error: 'Unerwartetes Antwortformat von TED' };
+    }
 
-      const cpvList = notice.cpvCodes || (notice.cpvCode ? [notice.cpvCode] : []);
-      const cpvCodesExtracted = cpvList.map((c) => c.code || '').filter(Boolean);
-      const cpvDescs = cpvList.map((c) => extractText(c.description)).filter(Boolean);
+    const tenders: Tender[] = notices.map((notice) => {
+      const { region, bundesland } = resolveBundesland(notice);
+      const { codes, descs } = pickCpvCodes(notice);
 
-      const titleText = extractText(notice.title);
-      const descText = extractText(notice.description);
+      const title =
+        pickText(notice.title) ||
+        pickText(notice.summary) ||
+        pickText(notice.shortDescription) ||
+        'Ohne Titel';
 
-      const keywordsMatched = keywords.filter(
-        (kw) =>
-          titleText.toLowerCase().includes(kw.toLowerCase()) ||
-          descText.toLowerCase().includes(kw.toLowerCase())
+      const description =
+        pickText(notice.description) ||
+        pickText(notice.summary) ||
+        pickText(notice.shortDescription) ||
+        '';
+
+      const authorityName =
+        pickText(notice.buyerName) ||
+        pickText(notice.contractingAuthorityName) ||
+        'Unbekannte Behörde';
+
+      const value = pickNumber(notice.estimatedValue ?? notice.totalEstimatedValue ?? null);
+
+      const fullText = `${title} ${description}`.toLowerCase();
+      const keywordsMatched = keywords.filter((kw) =>
+        fullText.includes(kw.toLowerCase())
       );
 
-      tenders.push({
-        id: `ted-${notice.noticeId || notice.id || Math.random()}`,
-        title: titleText || 'Ohne Titel',
-        description: descText || '',
-        contracting_authority: extractText(notice.buyerName) || 'Unbekannte Behörde',
-        published_date: notice.publicationDate || new Date().toISOString(),
-        deadline: notice.deadlineDate || null,
-        estimated_value: notice.estimatedValue?.amount || null,
-        currency: notice.estimatedValue?.currency || 'EUR',
-        cpv_codes: cpvCodesExtracted,
-        cpv_descriptions: cpvDescs,
+      return {
+        id: `ted-${notice.noticeId ?? notice.id ?? Math.random()}`,
+        title,
+        description,
+        contracting_authority: authorityName,
+        published_date: notice.publicationDate
+          ? new Date(notice.publicationDate).toISOString()
+          : new Date().toISOString(),
+        deadline: notice.deadlineDate ?? null,
+        estimated_value: value,
+        currency: 'EUR',
+        cpv_codes: codes,
+        cpv_descriptions: descs,
         region,
         bundesland,
         source_platform: 'TED (EU)',
-        source_url: notice.noticeUrl || `https://ted.europa.eu/de/notice/${notice.noticeId}`,
-        tender_type: notice.documentType || 'Ausschreibung',
+        source_url: noticeUrl(notice),
+        tender_type: notice.noticeType ?? notice.type ?? notice.documentType ?? 'Ausschreibung',
         keywords_matched: keywordsMatched,
-      });
-    }
+      };
+    });
 
-    return tenders;
-  } catch (error) {
-    console.error('Error fetching TED tenders:', error);
-    return [];
+    return { tenders };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('fetchTedTenders failed:', msg);
+    return { tenders: [], error: msg };
   }
 }

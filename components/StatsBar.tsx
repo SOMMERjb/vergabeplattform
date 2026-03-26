@@ -3,6 +3,12 @@
 import { Tender } from '@/lib/types';
 import { isToday, parseISO } from 'date-fns';
 
+export interface SourceStatus {
+  name: string;
+  count: number;
+  error?: string;
+}
+
 interface StatsBarProps {
   tenders: Tender[];
   isLoading: boolean;
@@ -10,6 +16,7 @@ interface StatsBarProps {
   onRefresh: () => void;
   isDemo: boolean;
   onToggleDemo: () => void;
+  sourceStatus?: SourceStatus[];
 }
 
 export default function StatsBar({
@@ -19,6 +26,7 @@ export default function StatsBar({
   onRefresh,
   isDemo,
   onToggleDemo,
+  sourceStatus = [],
 }: StatsBarProps) {
   const todayCount = tenders.filter((t) => {
     try {
@@ -30,18 +38,17 @@ export default function StatsBar({
 
   const totalValue = tenders.reduce((sum, t) => sum + (t.estimated_value || 0), 0);
 
-  const avgValue = tenders.length > 0 ? totalValue / tenders.length : 0;
-
   function formatCompact(n: number): string {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M €`;
     if (n >= 1_000) return `${(n / 1_000).toFixed(0)}T €`;
     return `${n.toFixed(0)} €`;
   }
 
-  const platforms = [...new Set(tenders.map((t) => t.source_platform))];
+  const workingSources = sourceStatus.filter((s) => !s.error || s.count > 0);
+  const failedSources = sourceStatus.filter((s) => s.error && s.count === 0);
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4">
+    <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-6 flex-wrap">
           <div>
@@ -58,21 +65,6 @@ export default function StatsBar({
               <div className="text-xs text-gray-500">Gesamtvolumen</div>
             </div>
           )}
-          <div>
-            <div className="text-xs font-medium text-gray-700 mb-1">Quellen aktiv</div>
-            <div className="flex flex-wrap gap-1">
-              {platforms.slice(0, 4).map((p) => (
-                <span key={p} className="text-xs px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">
-                  {p.split(' ')[0]}
-                </span>
-              ))}
-              {platforms.length > 4 && (
-                <span className="text-xs px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">
-                  +{platforms.length - 4}
-                </span>
-              )}
-            </div>
-          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -81,7 +73,6 @@ export default function StatsBar({
               Demo-Daten
             </span>
           )}
-
           <button
             onClick={onToggleDemo}
             className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors ${
@@ -92,7 +83,6 @@ export default function StatsBar({
           >
             {isDemo ? 'Live-Daten laden' : 'Demo-Daten'}
           </button>
-
           <button
             onClick={onRefresh}
             disabled={isLoading}
@@ -116,9 +106,51 @@ export default function StatsBar({
         </div>
       </div>
 
+      {/* Source status (only shown in live mode) */}
+      {!isDemo && sourceStatus.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1 border-t border-gray-100">
+          {sourceStatus.map((s) => {
+            const ok = !s.error || s.count > 0;
+            return (
+              <span
+                key={s.name}
+                title={s.error ? `Fehler: ${s.error}` : `${s.count} Vergaben`}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                  ok
+                    ? 'bg-green-50 text-green-800 border border-green-200'
+                    : 'bg-red-50 text-red-700 border border-red-200'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${ok ? 'bg-green-500' : 'bg-red-400'}`} />
+                {s.name}
+                {s.count > 0 && <span className="opacity-70">({s.count})</span>}
+                {!ok && <span className="opacity-70">✕</span>}
+              </span>
+            );
+          })}
+          {failedSources.length > 0 && (
+            <a
+              href="/api/debug"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-gray-400 hover:text-gray-600 underline ml-1 self-center"
+            >
+              Debug-Info
+            </a>
+          )}
+        </div>
+      )}
+
       {lastFetched && (
-        <div className="mt-2 text-xs text-gray-400">
+        <div className="text-xs text-gray-400">
           Zuletzt aktualisiert: {new Date(lastFetched).toLocaleString('de-DE')}
+        </div>
+      )}
+
+      {/* Working sources summary when no errors */}
+      {!isDemo && workingSources.length > 0 && failedSources.length === 0 && (
+        <div className="text-xs text-gray-400">
+          Alle {workingSources.length} Quellen erreichbar
         </div>
       )}
     </div>
