@@ -49,8 +49,7 @@ showMarkers = input.bool(true, "Entry/Exit Marker", group="Anzeige")
 showBG      = input.bool(true, "Trend-Hintergrund", group="Anzeige")
 
 // ─── Zeitfilter ───────────────────────────────────────────────────────────────
-inSession = not useTimeFilter or
-            (hour(time, "UTC") >= sessionStart and hour(time, "UTC") < sessionEnd)
+inSession = not useTimeFilter or (hour(time, "UTC") >= sessionStart and hour(time, "UTC") < sessionEnd)
 
 // ─── ATR ─────────────────────────────────────────────────────────────────────
 atr = ta.atr(atrLen)
@@ -114,11 +113,8 @@ var float pendingShortSL = na
 var bool  pendingLong    = false
 var float pendingLongSL  = na
 
-highSwept = not na(eqHighLvl) and trend == 1 and
-            high > eqHighLvl and close < eqHighLvl
-
-lowSwept  = not na(eqLowLvl)  and trend == -1 and
-            low  < eqLowLvl  and close > eqLowLvl
+highSwept = not na(eqHighLvl) and trend == 1 and high > eqHighLvl and close < eqHighLvl
+lowSwept  = not na(eqLowLvl)  and trend == -1 and low < eqLowLvl  and close > eqLowLvl
 
 if highSwept
     pendingShort   := true

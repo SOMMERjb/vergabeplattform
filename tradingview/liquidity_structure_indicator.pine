@@ -140,11 +140,8 @@ var float pendingShortSL = na
 var bool  pendingLong    = false
 var float pendingLongSL  = na
 
-highSwept = not na(eqHighLvl) and trend == 1 and
-            high > eqHighLvl and close < eqHighLvl
-
-lowSwept  = not na(eqLowLvl)  and trend == -1 and
-            low  < eqLowLvl  and close > eqLowLvl
+highSwept = not na(eqHighLvl) and trend == 1 and high > eqHighLvl and close < eqHighLvl
+lowSwept  = not na(eqLowLvl)  and trend == -1 and low < eqLowLvl  and close > eqLowLvl
 
 if highSwept
     pendingShort   := true
