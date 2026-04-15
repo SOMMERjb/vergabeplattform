@@ -1,10 +1,8 @@
 //@version=6
 // ══════════════════════════════════════════════════════════════════════════════
 //  Liquidity → Structure Shift  |  STRATEGY
-//  Gleiche Qualitätsfilter wie der Indikator:
-//  - CHoCH nur bei Body-Break (Kerze schließt in Richtung des Bruchs)
-//  - Sweep braucht Min. Pierce-Distanz
-//  - Min. BoS in Trendrichtung vor CHoCH
+//  FVG-Einstieg: Limit-Order in der Mitte der FVG vor dem CHoCH
+//  Kein FVG gefunden → Market-Order am CHoCH-Close (Fallback)
 // ══════════════════════════════════════════════════════════════════════════════
 strategy("Liquidity → Structure Shift [Strategy]",
          overlay           = true,
@@ -17,21 +15,20 @@ strategy("Liquidity → Structure Shift [Strategy]",
          pyramiding        = 0)
 
 // ─── Inputs ───────────────────────────────────────────────────────────────────
-swingLen    = input.int   (10,    "Swing Length",           minval=3,    group="Struktur")
-minBoS      = input.int   (1,     "Min. BoS vor CHoCH",    minval=1,    group="Struktur")
-eqSens      = input.float (0.2,   "Equal H/L Toleranz %",  minval=0.01, step=0.01, group="Liquidität")
-minSweepPct = input.float (0.0,   "Min. Sweep-Pierce %",   minval=0.0,  step=0.01, group="Liquidität")
-slMethod    = input.string("Fixed %", "SL Methode",        options=["Fixed %","ATR"], group="Trade")
-slBuf       = input.float (0.1,   "SL Puffer %",           minval=0.01, step=0.01, group="Trade")
-atrLen      = input.int   (14,    "ATR Periode",           minval=1,    group="Trade")
-atrMult     = input.float (1.5,   "ATR Multiplikator",     minval=0.1,  step=0.1,  group="Trade")
-rrRatio     = input.float (2.5,   "Risk/Reward Ratio",     minval=0.5,  step=0.1,  group="Trade")
+swingLen    = input.int   (10,    "Swing Length",          minval=3,    group="Struktur")
+minBoS      = input.int   (1,     "Min. BoS vor CHoCH",   minval=1,    group="Struktur")
+eqSens      = input.float (0.2,   "Equal H/L Toleranz %", minval=0.01, step=0.01, group="Liquidität")
+minSweepPct = input.float (0.0,   "Min. Sweep-Pierce %",  minval=0.0,  step=0.01, group="Liquidität")
+slMethod    = input.string("Fixed %", "SL Methode",       options=["Fixed %","ATR"], group="Trade")
+slBuf       = input.float (0.1,   "SL Puffer %",          minval=0.01, step=0.01, group="Trade")
+atrLen      = input.int   (14,    "ATR Periode",          minval=1,    group="Trade")
+atrMult     = input.float (1.5,   "ATR Multiplikator",    minval=0.1,  step=0.1,  group="Trade")
+rrRatio     = input.float (2.5,   "Risk/Reward Ratio",    minval=0.5,  step=0.1,  group="Trade")
 useTimeFilter = input.bool(false, "Zeitfilter",            group="Zeitfilter")
-sessionStart  = input.int (8,     "Start Stunde (UTC)",    minval=0, maxval=23, group="Zeitfilter")
+sessionStart  = input.int (8,     "Start Stunde (UTC)",   minval=0, maxval=23, group="Zeitfilter")
 sessionEnd    = input.int (20,    "End Stunde (UTC)",      minval=0, maxval=23, group="Zeitfilter")
 showStruct    = input.bool(true,  "Strukturlabels",        group="Anzeige")
 
-// ─── Zeitfilter & ATR ─────────────────────────────────────────────────────────
 inSession = not useTimeFilter or (hour(time, "UTC") >= sessionStart and hour(time, "UTC") < sessionEnd)
 atr       = ta.atr(atrLen)
 
@@ -94,7 +91,6 @@ if chochDown or bosDown
 
 // ─── Equal Highs / Lows ───────────────────────────────────────────────────────
 eqThresh = eqSens / 100.0
-
 isEQH = not na(ph) and not na(shVal) and not na(shVal2) and math.abs(shVal - shVal2) / shVal2 <= eqThresh
 isEQL = not na(pl) and not na(slVal) and not na(slVal2) and math.abs(slVal - slVal2) / slVal2 <= eqThresh
 
@@ -128,10 +124,33 @@ if lowSwept
     pendingLongSL  := slMethod == "ATR" ? low - atr * atrMult : low * (1.0 - slBuf / 100.0)
     eqLowLvl       := na
 
+// ─── FVG Erkennung ────────────────────────────────────────────────────────────
+bearFVG = high < low[2]
+bullFVG = low  > high[2]
+
+var float fvgSTop = na
+var float fvgSBot = na
+var float fvgLBot = na
+var float fvgLTop = na
+
+if pendingShort and bearFVG
+    fvgSTop := low[2]
+    fvgSBot := high
+
+if pendingLong and bullFVG
+    fvgLBot := high[2]
+    fvgLTop := low
+
+// Pending abbrechen
 if bosDown and pendingShort
     pendingShort := false
+    fvgSTop := na
+    fvgSBot := na
+
 if bosUp and pendingLong
     pendingLong := false
+    fvgLBot := na
+    fvgLTop := na
 
 // ─── Signale & Trade-Ausführung ───────────────────────────────────────────────
 noPos    = strategy.position_size == 0
@@ -139,22 +158,40 @@ shortSig = pendingShort and chochDown and noPos and inSession
 longSig  = pendingLong  and chochUp   and noPos and inSession
 
 if shortSig
-    sl_s = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
-    rsk  = math.max(sl_s - close, close * 0.0005)
-    tp_s = close - rsk * rrRatio
-    strategy.entry("Short", strategy.short, comment="SHORT")
+    hasFVG  = not na(fvgSTop) and not na(fvgSBot)
+    entryS  = hasFVG ? (fvgSTop + fvgSBot) / 2.0 : close
+    sl_s    = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
+    risk    = math.max(sl_s - entryS, entryS * 0.0005)
+    tp_s    = entryS - risk * rrRatio
+
+    if hasFVG
+        strategy.entry("Short", strategy.short, limit=entryS, comment="SHORT@FVG")
+    else
+        strategy.entry("Short", strategy.short, comment="SHORT@CHoCH")
+
     strategy.exit("Short Exit", from_entry="Short", stop=sl_s, limit=tp_s,
                   comment_loss="SL", comment_profit="TP")
     pendingShort := false
+    fvgSTop := na
+    fvgSBot := na
 
 if longSig
-    sl_l = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
-    rsk  = math.max(close - sl_l, close * 0.0005)
-    tp_l = close + rsk * rrRatio
-    strategy.entry("Long", strategy.long, comment="LONG")
+    hasFVG  = not na(fvgLBot) and not na(fvgLTop)
+    entryL  = hasFVG ? (fvgLBot + fvgLTop) / 2.0 : close
+    sl_l    = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
+    risk    = math.max(entryL - sl_l, entryL * 0.0005)
+    tp_l    = entryL + risk * rrRatio
+
+    if hasFVG
+        strategy.entry("Long", strategy.long, limit=entryL, comment="LONG@FVG")
+    else
+        strategy.entry("Long", strategy.long, comment="LONG@CHoCH")
+
     strategy.exit("Long Exit", from_entry="Long", stop=sl_l, limit=tp_l,
                   comment_loss="SL", comment_profit="TP")
     pendingLong := false
+    fvgLBot := na
+    fvgLTop := na
 
 // ─── Visuals ──────────────────────────────────────────────────────────────────
 plotshape(longSig,  "Long",  shape.triangleup,   location.belowbar,
