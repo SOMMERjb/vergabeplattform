@@ -1,21 +1,15 @@
 //@version=6
 // ══════════════════════════════════════════════════════════════════════════════
 //  Liquidity → Structure Shift  |  INDICATOR
-//
-//  Einstieg-Logik:
-//  1. Trend aufbauen via BoS
-//  2. Equal Highs/Lows als Liquiditätszone erkennen (EQH/EQL)
-//  3. Sweep: Wick durchsticht die Zone, Close zurück darunter/darüber
-//  4. CHoCH: Körper-Break (Kerze schließt in Richtung des Bruchs)
-//  5. FVG VOR dem CHoCH → Limit-Einstieg in der Mitte der Imbalance
-//  6. SL über Sweep-Wick, TP über R:R-Ratio
+//  Kette: BoS → EQH/EQL → Sweep (bleibt sichtbar) → FVG → CHoCH → Entry
+//  Letzte N Trades werden angezeigt, ältere automatisch gelöscht
 // ══════════════════════════════════════════════════════════════════════════════
 indicator("Liquidity → Structure Shift [Indicator]",
           overlay          = true,
           max_bars_back    = 500,
-          max_lines_count  = 300,
-          max_labels_count = 300,
-          max_boxes_count  = 100)
+          max_lines_count  = 500,
+          max_labels_count = 200,
+          max_boxes_count  = 60)
 
 // ─── Inputs ───────────────────────────────────────────────────────────────────
 swingLen    = input.int   (10,   "Swing Length",           minval=3,    group="Struktur")
@@ -24,8 +18,9 @@ eqSens      = input.float (0.2,  "Equal H/L Toleranz %",  minval=0.01, step=0.01
 minSweepPct = input.float (0.0,  "Min. Sweep-Pierce %",   minval=0.0,  step=0.01, group="Liquidität")
 rrRatio     = input.float (2.5,  "Risk/Reward Ratio",     minval=0.5,  step=0.1,  group="Trade")
 slBuf       = input.float (0.1,  "SL Puffer %",           minval=0.01, step=0.01, group="Trade")
-showBoS     = input.bool  (true, "BoS Labels",            group="Anzeige")
-showCHoCH   = input.bool  (true, "CHoCH Labels",          group="Anzeige")
+maxTrades   = input.int   (4,    "Letzte N Trades zeigen",minval=1, maxval=8, group="Anzeige")
+showBoS     = input.bool  (true, "BoS Marker",            group="Anzeige")
+showCHoCH   = input.bool  (true, "CHoCH Label",           group="Anzeige")
 showEQ      = input.bool  (true, "EQH / EQL Linien",      group="Anzeige")
 showFVG     = input.bool  (true, "FVG Einstiegszone",     group="Anzeige")
 showTrade   = input.bool  (true, "SL / TP Linien",        group="Anzeige")
@@ -54,11 +49,6 @@ if not na(pl)
     slBar2 := slBar
     slVal  := pl
     slBar  := bar_index[swingLen]
-
-plotshape(not na(ph), "Swing H", shape.circle, location.abovebar,
-          color.new(color.red,  50), offset=-swingLen, size=size.tiny)
-plotshape(not na(pl), "Swing L", shape.circle, location.belowbar,
-          color.new(color.teal, 50), offset=-swingLen, size=size.tiny)
 
 // ─── Marktstruktur ────────────────────────────────────────────────────────────
 var int   trend        = 0
@@ -92,31 +82,23 @@ if chochDown or bosDown
     if chochDown
         bosUpCount := 0
 
-if showBoS
-    if bosUp
-        label.new(bar_index, high, "BoS",
-                  style=label.style_label_down, color=color.new(color.teal, 25),
-                  textcolor=color.white, size=size.small)
-    if bosDown
-        label.new(bar_index, low, "BoS",
-                  style=label.style_label_up, color=color.new(color.maroon, 25),
-                  textcolor=color.white, size=size.small)
-
+// CHoCH Label (wichtigstes Signal, bleibt sichtbar)
 if showCHoCH
     if chochUp
         label.new(bar_index, low, "CHoCH",
                   style=label.style_label_up, color=color.new(color.lime, 10),
-                  textcolor=color.black, size=size.normal)
+                  textcolor=color.black, size=size.small)
     if chochDown
         label.new(bar_index, high, "CHoCH",
                   style=label.style_label_down, color=color.new(color.orange, 10),
-                  textcolor=color.black, size=size.normal)
+                  textcolor=color.black, size=size.small)
 
 // ─── Equal Highs / Lows ───────────────────────────────────────────────────────
 eqThresh = eqSens / 100.0
 isEQH = not na(ph) and not na(shVal) and not na(shVal2) and math.abs(shVal - shVal2) / shVal2 <= eqThresh
 isEQL = not na(pl) and not na(slVal) and not na(slVal2) and math.abs(slVal - slVal2) / slVal2 <= eqThresh
 
+// Aktive Linie (noch nicht gesweept) – wird ersetzt wenn neue EQH/EQL entsteht
 var float eqHighLvl   = na
 var int   eqHighStart = na
 var line  eqHighLine  = na
@@ -124,41 +106,45 @@ var float eqLowLvl    = na
 var int   eqLowStart  = na
 var line  eqLowLine   = na
 
+// Gesweepte Linien bleiben sichtbar (begrenzt auf letzte 8)
+var line[] sweptHighLines = array.new<line>()
+var line[] sweptLowLines  = array.new<line>()
+int MAX_SWEPT = 8
+
 if isEQH
-    if not na(eqHighLine)
+    // Nur AKTIVE (nicht gesweepte) Linie ersetzen
+    if not na(eqHighLine) and not na(eqHighLvl)
         line.delete(eqHighLine)
+        eqHighLine := na
     bool leftIsLower = shVal2 <= shVal
     eqHighLvl   := leftIsLower ? shVal2 : shVal
     eqHighStart := leftIsLower ? shBar2 : shBar
     if showEQ and not na(eqHighStart)
         eqHighLine := line.new(eqHighStart, eqHighLvl, bar_index, eqHighLvl,
-                               color=color.new(color.orange, 30), width=1,
+                               color=color.new(color.orange, 35), width=1,
                                style=line.style_dashed, extend=extend.right)
-        label.new(eqHighStart, eqHighLvl, "EQH",
-                  style=label.style_label_right, color=color.new(color.orange, 20),
-                  textcolor=color.white, size=size.tiny)
 
 if isEQL
-    if not na(eqLowLine)
+    if not na(eqLowLine) and not na(eqLowLvl)
         line.delete(eqLowLine)
+        eqLowLine := na
     bool leftIsHigher = slVal2 >= slVal
     eqLowLvl   := leftIsHigher ? slVal2 : slVal
     eqLowStart := leftIsHigher ? slBar2 : slBar
     if showEQ and not na(eqLowStart)
         eqLowLine := line.new(eqLowStart, eqLowLvl, bar_index, eqLowLvl,
-                              color=color.new(color.aqua, 30), width=1,
+                              color=color.new(color.aqua, 35), width=1,
                               style=line.style_dashed, extend=extend.right)
-        label.new(eqLowStart, eqLowLvl, "EQL",
-                  style=label.style_label_right, color=color.new(color.aqua, 20),
-                  textcolor=color.white, size=size.tiny)
 
 // ─── Liquiditätssweep ─────────────────────────────────────────────────────────
 minPierce = minSweepPct / 100.0
 
 var bool  pendingShort   = false
 var float pendingShortSL = na
+var int   sweepBarShort  = na
 var bool  pendingLong    = false
 var float pendingLongSL  = na
+var int   sweepBarLong   = na
 
 highSwept = not na(eqHighLvl) and trend == 1  and high >= eqHighLvl * (1.0 + minPierce) and close < eqHighLvl
 lowSwept  = not na(eqLowLvl)  and trend == -1 and low  <= eqLowLvl  * (1.0 - minPierce) and close > eqLowLvl
@@ -166,11 +152,19 @@ lowSwept  = not na(eqLowLvl)  and trend == -1 and low  <= eqLowLvl  * (1.0 - min
 if highSwept
     pendingShort   := true
     pendingShortSL := high * (1.0 + slBuf / 100.0)
+    sweepBarShort  := bar_index
     eqHighLvl      := na
+    // Linie einfrieren + zu gesweepten hinzufügen (bleibt sichtbar)
     if not na(eqHighLine)
         line.set_x2(eqHighLine, bar_index)
         line.set_extend(eqHighLine, extend.none)
         line.set_color(eqHighLine, color.new(color.orange, 0))
+        line.set_width(eqHighLine, 2)
+        array.push(sweptHighLines, eqHighLine)
+        eqHighLine := na
+        // Alte gesweepte Linien bereinigen
+        while array.size(sweptHighLines) > MAX_SWEPT
+            line.delete(array.shift(sweptHighLines))
     if showEQ
         label.new(bar_index, high, "Sweep",
                   style=label.style_label_down, color=color.new(color.orange, 0),
@@ -179,27 +173,30 @@ if highSwept
 if lowSwept
     pendingLong    := true
     pendingLongSL  := low * (1.0 - slBuf / 100.0)
+    sweepBarLong   := bar_index
     eqLowLvl       := na
     if not na(eqLowLine)
         line.set_x2(eqLowLine, bar_index)
         line.set_extend(eqLowLine, extend.none)
         line.set_color(eqLowLine, color.new(color.aqua, 0))
+        line.set_width(eqLowLine, 2)
+        array.push(sweptLowLines, eqLowLine)
+        eqLowLine := na
+        while array.size(sweptLowLines) > MAX_SWEPT
+            line.delete(array.shift(sweptLowLines))
     if showEQ
         label.new(bar_index, low, "Sweep",
                   style=label.style_label_up, color=color.new(color.aqua, 0),
                   textcolor=color.white, size=size.tiny)
 
-// ─── FVG Erkennung (Fair Value Gap) ───────────────────────────────────────────
-// Bärische FVG: Kerze[0].high < Kerze[2].low  →  Imbalance zwischen high und low[2]
-// Bullische FVG: Kerze[0].low > Kerze[2].high →  Imbalance zwischen high[2] und low
+// ─── FVG Erkennung ────────────────────────────────────────────────────────────
 bearFVG = high < low[2]
 bullFVG = low  > high[2]
 
-// Jeweils die aktuellste FVG nach dem Sweep verfolgen
-var float fvgSTop = na   // Short: oberes Ende der bärischen FVG
-var float fvgSBot = na   //        unteres Ende
-var int   fvgSBar = na   //        Bar-Index (Mitte des 3-Kerzen-Musters)
-var float fvgLBot = na   // Long:  unteres Ende der bullischen FVG
+var float fvgSTop = na
+var float fvgSBot = na
+var int   fvgSBar = na
+var float fvgLBot = na
 var float fvgLTop = na
 var int   fvgLBar = na
 
@@ -213,108 +210,154 @@ if pendingLong and bullFVG
     fvgLTop := low
     fvgLBar := bar_index[1]
 
-// Pending löschen wenn Trendstruktur gegen Setup dreht
+// Pending abbrechen wenn Trend gegen Setup dreht
 if bosDown and pendingShort
     pendingShort := false
-    fvgSTop := na
-    fvgSBot := na
-    fvgSBar := na
+    fvgSTop := na ; fvgSBot := na ; fvgSBar := na
 
 if bosUp and pendingLong
     pendingLong := false
-    fvgLBot := na
-    fvgLTop := na
-    fvgLBar := na
+    fvgLBot := na ; fvgLTop := na ; fvgLBar := na
 
-// ─── Einstiegssignale ─────────────────────────────────────────────────────────
+// ─── Signale ──────────────────────────────────────────────────────────────────
 shortSig = pendingShort and chochDown
 longSig  = pendingLong  and chochUp
 
-// ─── Entry Arrows ─────────────────────────────────────────────────────────────
-plotshape(longSig,  "LONG",  shape.triangleup,   location.belowbar,
-          color.new(color.green, 0), size=size.large)
-plotshape(shortSig, "SHORT", shape.triangledown, location.abovebar,
-          color.new(color.red,   0), size=size.large)
+// ─── Trade Visualisierung (letzte N Trades, ältere werden gelöscht) ──────────
+var box[]   tradeFVGBoxes   = array.new<box>()
+var line[]  tradeEntryLines = array.new<line>()
+var line[]  tradeSLLines    = array.new<line>()
+var line[]  tradeTPLines    = array.new<line>()
+var label[] tradeEntryLbls  = array.new<label>()
+var label[] tradeSLLbls     = array.new<label>()
+var label[] tradeTPLbls     = array.new<label>()
 
-// ─── Trade-Visualisierung mit FVG-Einstieg ───────────────────────────────────
-extBars = 40
+// Älteste Trade-Visualisierungen löschen
+cleanupTrades() =>
+    while array.size(tradeEntryLines) > maxTrades
+        b = array.shift(tradeFVGBoxes)
+        if not na(b)
+            box.delete(b)
+        line.delete(array.shift(tradeEntryLines))
+        line.delete(array.shift(tradeSLLines))
+        line.delete(array.shift(tradeTPLines))
+        label.delete(array.shift(tradeEntryLbls))
+        label.delete(array.shift(tradeSLLbls))
+        label.delete(array.shift(tradeTPLbls))
+
+extBars = 50
 
 if shortSig
-    hasFVG   = not na(fvgSTop) and not na(fvgSBot)
-    entryS   = hasFVG ? (fvgSTop + fvgSBot) / 2.0 : close
-    sl_s     = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
-    risk     = math.max(sl_s - entryS, entryS * 0.0005)
-    tp_s     = entryS - risk * rrRatio
+    hasFVG  = not na(fvgSTop) and not na(fvgSBot)
+    entryS  = hasFVG ? (fvgSTop + fvgSBot) / 2.0 : close
+    sl_s    = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
+    risk    = math.max(sl_s - entryS, entryS * 0.0005)
+    tp_s    = entryS - risk * rrRatio
+    slFrom  = na(sweepBarShort) ? bar_index : sweepBarShort
 
-    // FVG-Box zeichnen
-    if showFVG and hasFVG and not na(fvgSBar)
-        box.new(fvgSBar - 1, fvgSTop, bar_index + extBars, fvgSBot,
-                bgcolor      = color.new(color.red, 88),
-                border_color = color.new(color.red, 40),
-                border_width = 1)
-        label.new(fvgSBar - 1, fvgSTop, "FVG",
-                  style=label.style_label_right,
-                  color=color.new(color.red, 30), textcolor=color.white, size=size.tiny)
+    // FVG Box
+    newBox = hasFVG and showFVG and not na(fvgSBar) ?
+             box.new(fvgSBar - 1, fvgSTop, bar_index + extBars, fvgSBot,
+                     bgcolor=color.new(color.red, 88),
+                     border_color=color.new(color.red, 50), border_width=1) : na
 
-    if showTrade
-        line.new(bar_index, entryS, bar_index + extBars, entryS,
-                 color=color.new(color.yellow, 0), width=1)
-        line.new(bar_index, sl_s,   bar_index + extBars, sl_s,
-                 color=color.new(color.red,  20), width=1, style=line.style_dashed)
-        line.new(bar_index, tp_s,   bar_index + extBars, tp_s,
-                 color=color.new(color.lime, 20), width=1, style=line.style_dashed)
-        label.new(bar_index + extBars, sl_s, "SL",
-                  style=label.style_label_left, color=color.new(color.red,  10),
-                  textcolor=color.white, size=size.tiny)
-        label.new(bar_index + extBars, tp_s, str.tostring(rrRatio, "#.#") + "R",
-                  style=label.style_label_left, color=color.new(color.lime, 10),
-                  textcolor=color.black, size=size.tiny)
-        label.new(bar_index + extBars, entryS,
-                  hasFVG ? "Entry FVG" : "Entry",
-                  style=label.style_label_left, color=color.new(color.yellow, 10),
-                  textcolor=color.black, size=size.tiny)
+    // Linien
+    eLn = showTrade ? line.new(bar_index, entryS, bar_index + extBars, entryS,
+                               color=color.new(color.yellow, 0), width=1) : na
+    // SL startet am Sweep-Bar
+    sLn = showTrade ? line.new(slFrom, sl_s, bar_index + extBars, sl_s,
+                               color=color.new(color.red, 20), width=1,
+                               style=line.style_dashed) : na
+    tLn = showTrade ? line.new(bar_index, tp_s, bar_index + extBars, tp_s,
+                               color=color.new(color.lime, 20), width=1,
+                               style=line.style_dashed) : na
+
+    // Labels
+    eLbl = showTrade ? label.new(bar_index + extBars, entryS,
+                                 hasFVG ? "Entry FVG" : "Entry",
+                                 style=label.style_label_left,
+                                 color=color.new(color.yellow, 10),
+                                 textcolor=color.black, size=size.tiny) : na
+    sLbl = showTrade ? label.new(bar_index + extBars, sl_s, "SL",
+                                 style=label.style_label_left,
+                                 color=color.new(color.red, 10),
+                                 textcolor=color.white, size=size.tiny) : na
+    tLbl = showTrade ? label.new(bar_index + extBars, tp_s,
+                                 str.tostring(rrRatio, "#.#") + "R",
+                                 style=label.style_label_left,
+                                 color=color.new(color.lime, 10),
+                                 textcolor=color.black, size=size.tiny) : na
+
+    array.push(tradeFVGBoxes,   newBox)
+    array.push(tradeEntryLines, eLn)
+    array.push(tradeSLLines,    sLn)
+    array.push(tradeTPLines,    tLn)
+    array.push(tradeEntryLbls,  eLbl)
+    array.push(tradeSLLbls,     sLbl)
+    array.push(tradeTPLbls,     tLbl)
+    cleanupTrades()
 
     pendingShort := false
-    fvgSTop := na
-    fvgSBot := na
-    fvgSBar := na
+    fvgSTop := na ; fvgSBot := na ; fvgSBar := na ; sweepBarShort := na
 
 if longSig
-    hasFVG   = not na(fvgLBot) and not na(fvgLTop)
-    entryL   = hasFVG ? (fvgLBot + fvgLTop) / 2.0 : close
-    sl_l     = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
-    risk     = math.max(entryL - sl_l, entryL * 0.0005)
-    tp_l     = entryL + risk * rrRatio
+    hasFVG  = not na(fvgLBot) and not na(fvgLTop)
+    entryL  = hasFVG ? (fvgLBot + fvgLTop) / 2.0 : close
+    sl_l    = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
+    risk    = math.max(entryL - sl_l, entryL * 0.0005)
+    tp_l    = entryL + risk * rrRatio
+    slFrom  = na(sweepBarLong) ? bar_index : sweepBarLong
 
-    // FVG-Box zeichnen
-    if showFVG and hasFVG and not na(fvgLBar)
-        box.new(fvgLBar - 1, fvgLTop, bar_index + extBars, fvgLBot,
-                bgcolor      = color.new(color.green, 88),
-                border_color = color.new(color.green, 40),
-                border_width = 1)
-        label.new(fvgLBar - 1, fvgLBot, "FVG",
-                  style=label.style_label_right,
-                  color=color.new(color.green, 30), textcolor=color.white, size=size.tiny)
+    newBox = hasFVG and showFVG and not na(fvgLBar) ?
+             box.new(fvgLBar - 1, fvgLTop, bar_index + extBars, fvgLBot,
+                     bgcolor=color.new(color.green, 88),
+                     border_color=color.new(color.green, 50), border_width=1) : na
 
-    if showTrade
-        line.new(bar_index, entryL, bar_index + extBars, entryL,
-                 color=color.new(color.yellow, 0), width=1)
-        line.new(bar_index, sl_l,   bar_index + extBars, sl_l,
-                 color=color.new(color.red,  20), width=1, style=line.style_dashed)
-        line.new(bar_index, tp_l,   bar_index + extBars, tp_l,
-                 color=color.new(color.lime, 20), width=1, style=line.style_dashed)
-        label.new(bar_index + extBars, sl_l, "SL",
-                  style=label.style_label_left, color=color.new(color.red,  10),
-                  textcolor=color.white, size=size.tiny)
-        label.new(bar_index + extBars, tp_l, str.tostring(rrRatio, "#.#") + "R",
-                  style=label.style_label_left, color=color.new(color.lime, 10),
-                  textcolor=color.black, size=size.tiny)
-        label.new(bar_index + extBars, entryL,
-                  hasFVG ? "Entry FVG" : "Entry",
-                  style=label.style_label_left, color=color.new(color.yellow, 10),
-                  textcolor=color.black, size=size.tiny)
+    eLn = showTrade ? line.new(bar_index, entryL, bar_index + extBars, entryL,
+                               color=color.new(color.yellow, 0), width=1) : na
+    sLn = showTrade ? line.new(slFrom, sl_l, bar_index + extBars, sl_l,
+                               color=color.new(color.red, 20), width=1,
+                               style=line.style_dashed) : na
+    tLn = showTrade ? line.new(bar_index, tp_l, bar_index + extBars, tp_l,
+                               color=color.new(color.lime, 20), width=1,
+                               style=line.style_dashed) : na
+
+    eLbl = showTrade ? label.new(bar_index + extBars, entryL,
+                                 hasFVG ? "Entry FVG" : "Entry",
+                                 style=label.style_label_left,
+                                 color=color.new(color.yellow, 10),
+                                 textcolor=color.black, size=size.tiny) : na
+    sLbl = showTrade ? label.new(bar_index + extBars, sl_l, "SL",
+                                 style=label.style_label_left,
+                                 color=color.new(color.red, 10),
+                                 textcolor=color.white, size=size.tiny) : na
+    tLbl = showTrade ? label.new(bar_index + extBars, tp_l,
+                                 str.tostring(rrRatio, "#.#") + "R",
+                                 style=label.style_label_left,
+                                 color=color.new(color.lime, 10),
+                                 textcolor=color.black, size=size.tiny) : na
+
+    array.push(tradeFVGBoxes,   newBox)
+    array.push(tradeEntryLines, eLn)
+    array.push(tradeSLLines,    sLn)
+    array.push(tradeTPLines,    tLn)
+    array.push(tradeEntryLbls,  eLbl)
+    array.push(tradeSLLbls,     sLbl)
+    array.push(tradeTPLbls,     tLbl)
+    cleanupTrades()
 
     pendingLong := false
-    fvgLBot := na
-    fvgLTop := na
-    fvgLBar := na
+    fvgLBot := na ; fvgLTop := na ; fvgLBar := na ; sweepBarLong := na
+
+// ─── Permanente Marker (nicht in Trade-Arrays) ───────────────────────────────
+// BoS: kleiner Pfeil, kein Text → weniger Clutter
+plotshape(showBoS and bosUp,   "BoS ▲", shape.triangleup,   location.belowbar,
+          color.new(color.teal,   20), size=size.tiny)
+plotshape(showBoS and bosDown, "BoS ▼", shape.triangledown, location.abovebar,
+          color.new(color.maroon, 20), size=size.tiny)
+
+// Entry Pfeile
+plotshape(longSig,  "LONG",  shape.triangleup,   location.belowbar,
+          color.new(color.green, 0), size=size.normal)
+plotshape(shortSig, "SHORT", shape.triangledown, location.abovebar,
+          color.new(color.red,   0), size=size.normal)
