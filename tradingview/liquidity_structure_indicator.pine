@@ -213,11 +213,15 @@ if pendingLong and bullFVG
 // Pending abbrechen wenn Trend gegen Setup dreht
 if bosDown and pendingShort
     pendingShort := false
-    fvgSTop := na ; fvgSBot := na ; fvgSBar := na
+    fvgSTop := na
+    fvgSBot := na
+    fvgSBar := na
 
 if bosUp and pendingLong
     pendingLong := false
-    fvgLBot := na ; fvgLTop := na ; fvgLBar := na
+    fvgLBot := na
+    fvgLTop := na
+    fvgLBar := na
 
 // ─── Signale ──────────────────────────────────────────────────────────────────
 shortSig = pendingShort and chochDown
@@ -298,7 +302,10 @@ if shortSig
     cleanupTrades()
 
     pendingShort := false
-    fvgSTop := na ; fvgSBot := na ; fvgSBar := na ; sweepBarShort := na
+    fvgSTop := na
+    fvgSBot := na
+    fvgSBar := na
+    sweepBarShort := na
 
 if longSig
     hasFVG  = not na(fvgLBot) and not na(fvgLTop)
@@ -347,7 +354,10 @@ if longSig
     cleanupTrades()
 
     pendingLong := false
-    fvgLBot := na ; fvgLTop := na ; fvgLBar := na ; sweepBarLong := na
+    fvgLBot := na
+    fvgLTop := na
+    fvgLBar := na
+    sweepBarLong := na
 
 // ─── Permanente Marker (nicht in Trade-Arrays) ───────────────────────────────
 // BoS: kleiner Pfeil, kein Text → weniger Clutter
