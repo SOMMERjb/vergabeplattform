@@ -1,7 +1,11 @@
 //@version=6
 // ══════════════════════════════════════════════════════════════════════════════
-//  Liquidity → Structure Shift  |  INDICATOR  (v6, edge-detected)
-//  Strategie: wizcapitals – "Simple liquidity → structure shift setup"
+//  Liquidity → Structure Shift  |  INDICATOR
+//  Qualitätsfilter:
+//  - BoS: schließt über/unter Swing-Level (Body Break)
+//  - CHoCH: schließt über/unter Level UND Kerze muss in Richtung des Bruchs schließen
+//  - Sweep: Wick muss Level um mind. minSweepPct % übersteigen, Close zurück darunter
+//  - Setup: mind. 2 BoS in Trendrichtung bevor CHoCH als valide gilt
 // ══════════════════════════════════════════════════════════════════════════════
 indicator("Liquidity → Structure Shift [Indicator]",
           overlay          = true,
@@ -10,17 +14,18 @@ indicator("Liquidity → Structure Shift [Indicator]",
           max_labels_count = 300)
 
 // ─── Inputs ───────────────────────────────────────────────────────────────────
-swingLen  = input.int   (10,    "Swing Length",          minval=3,    group="Struktur",
-                          tooltip="Anzahl Bars links+rechts für Swing-Erkennung. Höher = weniger, aber zuverlässigere Signale")
-eqSens    = input.float (0.15,  "Equal H/L Toleranz %", minval=0.01, step=0.01, group="Liquidität",
-                          tooltip="Max. Abweichung zweier Swing-Punkte damit sie als Equal gelten")
-rrRatio   = input.float (2.5,   "Risk/Reward Ratio",    minval=0.5,  step=0.1,  group="Trade")
-slBuf     = input.float (0.15,  "SL Puffer %",          minval=0.01, step=0.01, group="Trade")
-showBoS   = input.bool  (true,  "BoS Labels",           group="Anzeige")
-showCHoCH = input.bool  (true,  "CHoCH Labels",         group="Anzeige")
-showEQ    = input.bool  (true,  "Liquiditätszonen",     group="Anzeige")
-showTrade = input.bool  (true,  "SL / TP Linien",       group="Anzeige")
-showBG    = input.bool  (false, "Trend-Hintergrund",    group="Anzeige")
+swingLen     = input.int   (10,   "Swing Length",            minval=3,    group="Struktur")
+minBoS       = input.int   (2,    "Min. BoS vor CHoCH",      minval=1,    group="Struktur",
+                             tooltip="Wie viele BoS in Trendrichtung nötig sind, bevor ein CHoCH als valide gilt")
+eqSens       = input.float (0.2,  "Equal H/L Toleranz %",   minval=0.01, step=0.01, group="Liquidität")
+minSweepPct  = input.float (0.05, "Min. Sweep-Pierce %",     minval=0.01, step=0.01, group="Liquidität",
+                             tooltip="Wie viel % der Wick über/unter das EQH/EQL-Level gehen muss")
+rrRatio      = input.float (2.5,  "Risk/Reward Ratio",       minval=0.5,  step=0.1,  group="Trade")
+slBuf        = input.float (0.1,  "SL Puffer %",             minval=0.01, step=0.01, group="Trade")
+showBoS      = input.bool  (true, "BoS Labels",              group="Anzeige")
+showCHoCH    = input.bool  (true, "CHoCH Labels",            group="Anzeige")
+showEQ       = input.bool  (true, "Liquiditätszonen",        group="Anzeige")
+showTrade    = input.bool  (true, "SL / TP Linien",          group="Anzeige")
 
 // ─── Swing Erkennung ──────────────────────────────────────────────────────────
 ph = ta.pivothigh(high, swingLen, swingLen)
@@ -47,107 +52,130 @@ if not na(pl)
     slVal  := pl
     slBar  := bar_index[swingLen]
 
+// Swing-Punkte als kleine Kreise
 plotshape(not na(ph), "Swing H", shape.circle, location.abovebar,
-          color.new(color.red,   60), offset=-swingLen, size=size.tiny)
+          color.new(color.red,   50), offset=-swingLen, size=size.tiny)
 plotshape(not na(pl), "Swing L", shape.circle, location.belowbar,
-          color.new(color.green, 60), offset=-swingLen, size=size.tiny)
+          color.new(color.teal,  50), offset=-swingLen, size=size.tiny)
 
-// ─── Marktstruktur mit Edge-Detection ────────────────────────────────────────
-// Edge-Detection: jede Swing-Level feuert nur EINMAL beim ersten Bruch
-var int   trend          = 0
-var float lastBrknHigh   = na   // zuletzt gebrochenes Swing-Hoch
-var float lastBrknLow    = na   // zuletzt gebrochenes Swing-Tief
+// ─── Marktstruktur mit Edge-Detection & Body-Break ────────────────────────────
+var int   trend        = 0
+var float lastBrknHigh = na
+var float lastBrknLow  = na
+var int   bosUpCount   = 0    // BoS nach oben seit letztem Tief
+var int   bosDownCount = 0    // BoS nach unten seit letztem Hoch
 
+// Neues Swing-Level noch nie gebrochen?
 newHighBreak = not na(shVal) and close > shVal and (na(lastBrknHigh) or shVal != lastBrknHigh)
 newLowBreak  = not na(slVal) and close < slVal and (na(lastBrknLow)  or slVal != lastBrknLow)
 
-chochUp   = newHighBreak and trend == -1
-chochDown = newLowBreak  and trend ==  1
-bosUp     = newHighBreak and trend >= 0 and not chochUp
-bosDown   = newLowBreak  and trend <= 0 and not chochDown
+// Body-Break: Kerze muss in Trendrichtung schließen
+bullBody = close > open
+bearBody = close < open
+
+chochUp   = newHighBreak and trend == -1 and bullBody and bosDownCount >= minBoS
+chochDown = newLowBreak  and trend ==  1 and bearBody and bosUpCount   >= minBoS
+bosUp     = newHighBreak and trend >= 0  and not chochUp
+bosDown   = newLowBreak  and trend <= 0  and not chochDown
 
 if chochUp or bosUp
     trend        := 1
     lastBrknHigh := shVal
+    bosUpCount   := chochUp ? 0 : bosUpCount + 1
+    if chochUp
+        bosDownCount := 0
 
 if chochDown or bosDown
-    trend       := -1
-    lastBrknLow := slVal
+    trend         := -1
+    lastBrknLow   := slVal
+    bosDownCount  := chochDown ? 0 : bosDownCount + 1
+    if chochDown
+        bosUpCount := 0
 
 if showBoS
     if bosUp
         label.new(bar_index, high, "BoS",
-                  style=label.style_label_down, color=color.new(color.teal, 20),
+                  style=label.style_label_down, color=color.new(color.teal, 25),
                   textcolor=color.white, size=size.small)
     if bosDown
         label.new(bar_index, low, "BoS",
-                  style=label.style_label_up, color=color.new(color.maroon, 20),
+                  style=label.style_label_up, color=color.new(color.maroon, 25),
                   textcolor=color.white, size=size.small)
 
 if showCHoCH
     if chochUp
         label.new(bar_index, low, "CHoCH",
-                  style=label.style_label_up, color=color.new(color.lime, 15),
-                  textcolor=color.black, size=size.small)
+                  style=label.style_label_up, color=color.new(color.lime, 10),
+                  textcolor=color.black, size=size.normal)
     if chochDown
         label.new(bar_index, high, "CHoCH",
-                  style=label.style_label_down, color=color.new(color.orange, 15),
-                  textcolor=color.black, size=size.small)
+                  style=label.style_label_down, color=color.new(color.orange, 10),
+                  textcolor=color.black, size=size.normal)
 
-// ─── Equal Highs / Lows (Liquiditätszonen) ────────────────────────────────────
+// ─── Equal Highs / Lows – Linie startet exakt am Swing-Candle ─────────────────
 eqThresh = eqSens / 100.0
 
 isEQH = not na(ph) and not na(shVal) and not na(shVal2) and math.abs(shVal - shVal2) / shVal2 <= eqThresh
 isEQL = not na(pl) and not na(slVal) and not na(slVal2) and math.abs(slVal - slVal2) / slVal2 <= eqThresh
 
-// Immer nur die aktuellste EQH/EQL-Linie — alte wird gelöscht
-var float eqHighLvl  = na
-var line  eqHighLine = na
-var float eqLowLvl   = na
-var line  eqLowLine  = na
+// Level = das HÖHERE der zwei Hochs (wo die Stop-Orders liegen)
+// Startet am linken Swing-Candle auf dem tatsächlichen Hoch dieses Candles
+var float eqHighLvl   = na
+var int   eqHighStart = na
+var line  eqHighLine  = na
+var float eqLowLvl    = na
+var int   eqLowStart  = na
+var line  eqLowLine   = na
 
 if isEQH
     if not na(eqHighLine)
         line.delete(eqHighLine)
-    eqHighLvl := math.max(shVal, shVal2)   // exakt am höchsten Wick
-    if showEQ and not na(shBar2)
-        eqHighLine := line.new(shBar2, eqHighLvl, bar_index, eqHighLvl,
-                               color=color.new(color.orange, 20), width=2,
+    // Starte die Linie am Candle mit dem niedrigeren Hoch → Wick berührt die Linie exakt
+    bool leftIsLower = shVal2 <= shVal
+    eqHighLvl   := leftIsLower ? shVal2 : shVal
+    eqHighStart := leftIsLower ? shBar2 : shBar
+    if showEQ and not na(eqHighStart)
+        eqHighLine := line.new(eqHighStart, eqHighLvl, bar_index, eqHighLvl,
+                               color=color.new(color.orange, 30), width=1,
                                style=line.style_dashed, extend=extend.right)
-        label.new(bar_index, eqHighLvl, "EQH",
-                  style=label.style_label_left, color=color.new(color.orange, 30),
+        label.new(eqHighStart, eqHighLvl, "EQH",
+                  style=label.style_label_right, color=color.new(color.orange, 20),
                   textcolor=color.white, size=size.tiny)
 
 if isEQL
     if not na(eqLowLine)
         line.delete(eqLowLine)
-    eqLowLvl := math.min(slVal, slVal2)    // exakt am tiefsten Wick
-    if showEQ and not na(slBar2)
-        eqLowLine := line.new(slBar2, eqLowLvl, bar_index, eqLowLvl,
-                              color=color.new(color.aqua, 20), width=2,
+    bool leftIsHigher = slVal2 >= slVal
+    eqLowLvl   := leftIsHigher ? slVal2 : slVal
+    eqLowStart := leftIsHigher ? slBar2 : slBar
+    if showEQ and not na(eqLowStart)
+        eqLowLine := line.new(eqLowStart, eqLowLvl, bar_index, eqLowLvl,
+                              color=color.new(color.aqua, 30), width=1,
                               style=line.style_dashed, extend=extend.right)
-        label.new(bar_index, eqLowLvl, "EQL",
-                  style=label.style_label_left, color=color.new(color.aqua, 30),
+        label.new(eqLowStart, eqLowLvl, "EQL",
+                  style=label.style_label_right, color=color.new(color.aqua, 20),
                   textcolor=color.white, size=size.tiny)
 
 // ─── Liquiditätssweep ─────────────────────────────────────────────────────────
+// Wick muss Level deutlich durchstechen (minSweepPct), Close muss zurück sein
+minPierce = minSweepPct / 100.0
+
 var bool  pendingShort   = false
 var float pendingShortSL = na
 var bool  pendingLong    = false
 var float pendingLongSL  = na
 
-highSwept = not na(eqHighLvl) and trend == 1 and high > eqHighLvl and close < eqHighLvl
-lowSwept  = not na(eqLowLvl)  and trend == -1 and low < eqLowLvl  and close > eqLowLvl
+highSwept = not na(eqHighLvl) and trend == 1 and high > eqHighLvl * (1.0 + minPierce) and close < eqHighLvl
+lowSwept  = not na(eqLowLvl)  and trend == -1 and low < eqLowLvl  * (1.0 - minPierce) and close > eqLowLvl
 
 if highSwept
     pendingShort   := true
-    pendingShortSL := high * (1.0 + slBuf / 100.0)   // SL über dem Sweep-Wick
+    pendingShortSL := high * (1.0 + slBuf / 100.0)
     eqHighLvl      := na
     if not na(eqHighLine)
-        line.set_x2(eqHighLine, bar_index)            // Linie endet am Sweep-Bar
+        line.set_x2(eqHighLine, bar_index)
         line.set_extend(eqHighLine, extend.none)
         line.set_color(eqHighLine, color.new(color.orange, 0))
-        line.set_width(eqHighLine, 1)
     if showEQ
         label.new(bar_index, high, "Sweep",
                   style=label.style_label_down, color=color.new(color.orange, 0),
@@ -155,17 +183,22 @@ if highSwept
 
 if lowSwept
     pendingLong    := true
-    pendingLongSL  := low * (1.0 - slBuf / 100.0)    // SL unter dem Sweep-Wick
+    pendingLongSL  := low * (1.0 - slBuf / 100.0)
     eqLowLvl       := na
     if not na(eqLowLine)
         line.set_x2(eqLowLine, bar_index)
         line.set_extend(eqLowLine, extend.none)
         line.set_color(eqLowLine, color.new(color.aqua, 0))
-        line.set_width(eqLowLine, 1)
     if showEQ
         label.new(bar_index, low, "Sweep",
                   style=label.style_label_up, color=color.new(color.aqua, 0),
                   textcolor=color.white, size=size.tiny)
+
+// Pending abbrechen wenn Struktur gegen das Setup dreht
+if bosDown and pendingShort
+    pendingShort := false
+if bosUp and pendingLong
+    pendingLong := false
 
 // ─── Einstiegssignale ─────────────────────────────────────────────────────────
 shortSig = pendingShort and chochDown
@@ -176,7 +209,7 @@ if shortSig
 if longSig
     pendingLong  := false
 
-// ─── Entry Marker (nur Pfeil, kein doppeltes Label) ──────────────────────────
+// ─── Entry Arrows ─────────────────────────────────────────────────────────────
 plotshape(longSig,  "LONG",  shape.triangleup,   location.belowbar,
           color.new(color.green, 0), size=size.large)
 plotshape(shortSig, "SHORT", shape.triangledown, location.abovebar,
@@ -186,35 +219,35 @@ plotshape(shortSig, "SHORT", shape.triangledown, location.abovebar,
 extBars = 40
 
 if shortSig and showTrade
-    sl_s  = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
-    risk  = math.max(sl_s - close, close * 0.0001)
-    tp_s  = close - risk * rrRatio
+    sl_s = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
+    risk = math.max(sl_s - close, close * 0.0005)
+    tp_s = close - risk * rrRatio
+    line.new(bar_index, sl_s, bar_index + extBars, sl_s,
+             color=color.new(color.red,  20), width=1, style=line.style_dashed)
+    line.new(bar_index, tp_s, bar_index + extBars, tp_s,
+             color=color.new(color.lime, 20), width=1, style=line.style_dashed)
     line.new(bar_index, close, bar_index + extBars, close,
-             color=color.new(color.yellow, 20), width=2)
-    line.new(bar_index, sl_s,  bar_index + extBars, sl_s,
-             color=color.new(color.red, 0),    width=1, style=line.style_dashed)
-    line.new(bar_index, tp_s,  bar_index + extBars, tp_s,
-             color=color.new(color.lime, 0),   width=1, style=line.style_dashed)
+             color=color.new(color.gray, 40), width=1)
     label.new(bar_index + extBars, sl_s, "SL",
-              style=label.style_label_left, color=color.red,  textcolor=color.white, size=size.tiny)
+              style=label.style_label_left, color=color.new(color.red,  10),
+              textcolor=color.white, size=size.tiny)
     label.new(bar_index + extBars, tp_s, str.tostring(rrRatio, "#.#") + "R",
-              style=label.style_label_left, color=color.lime, textcolor=color.black, size=size.tiny)
+              style=label.style_label_left, color=color.new(color.lime, 10),
+              textcolor=color.black, size=size.tiny)
 
 if longSig and showTrade
-    sl_l  = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
-    risk  = math.max(close - sl_l, close * 0.0001)
-    tp_l  = close + risk * rrRatio
+    sl_l = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
+    risk = math.max(close - sl_l, close * 0.0005)
+    tp_l = close + risk * rrRatio
+    line.new(bar_index, sl_l, bar_index + extBars, sl_l,
+             color=color.new(color.red,  20), width=1, style=line.style_dashed)
+    line.new(bar_index, tp_l, bar_index + extBars, tp_l,
+             color=color.new(color.lime, 20), width=1, style=line.style_dashed)
     line.new(bar_index, close, bar_index + extBars, close,
-             color=color.new(color.yellow, 20), width=2)
-    line.new(bar_index, sl_l,  bar_index + extBars, sl_l,
-             color=color.new(color.red, 0),    width=1, style=line.style_dashed)
-    line.new(bar_index, tp_l,  bar_index + extBars, tp_l,
-             color=color.new(color.lime, 0),   width=1, style=line.style_dashed)
+             color=color.new(color.gray, 40), width=1)
     label.new(bar_index + extBars, sl_l, "SL",
-              style=label.style_label_left, color=color.red,  textcolor=color.white, size=size.tiny)
+              style=label.style_label_left, color=color.new(color.red,  10),
+              textcolor=color.white, size=size.tiny)
     label.new(bar_index + extBars, tp_l, str.tostring(rrRatio, "#.#") + "R",
-              style=label.style_label_left, color=color.lime, textcolor=color.black, size=size.tiny)
-
-// ─── Trend Hintergrund ────────────────────────────────────────────────────────
-bgcolor(showBG and trend ==  1 ? color.new(color.green, 94) : na, title="Bullish BG")
-bgcolor(showBG and trend == -1 ? color.new(color.red,   94) : na, title="Bearish BG")
+              style=label.style_label_left, color=color.new(color.lime, 10),
+              textcolor=color.black, size=size.tiny)

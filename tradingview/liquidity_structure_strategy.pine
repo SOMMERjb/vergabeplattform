@@ -1,34 +1,35 @@
 //@version=6
 // ══════════════════════════════════════════════════════════════════════════════
-//  Liquidity → Structure Shift  |  STRATEGY  (v6, edge-detected)
-//  Strategie: wizcapitals – "Simple liquidity → structure shift setup"
+//  Liquidity → Structure Shift  |  STRATEGY
+//  Gleiche Qualitätsfilter wie der Indikator:
+//  - CHoCH nur bei Body-Break (Kerze schließt in Richtung des Bruchs)
+//  - Sweep braucht Min. Pierce-Distanz
+//  - Min. BoS in Trendrichtung vor CHoCH
 // ══════════════════════════════════════════════════════════════════════════════
 strategy("Liquidity → Structure Shift [Strategy]",
-         overlay            = true,
-         default_qty_type   = strategy.percent_of_equity,
-         default_qty_value  = 10,
-         commission_type    = strategy.commission.percent,
-         commission_value   = 0.05,
-         slippage           = 2,
-         initial_capital    = 10000,
-         pyramiding         = 0)
+         overlay           = true,
+         default_qty_type  = strategy.percent_of_equity,
+         default_qty_value = 10,
+         commission_type   = strategy.commission.percent,
+         commission_value  = 0.05,
+         slippage          = 2,
+         initial_capital   = 10000,
+         pyramiding        = 0)
 
 // ─── Inputs ───────────────────────────────────────────────────────────────────
-swingLen = input.int   (10,    "Swing Length",          minval=3,    group="Struktur")
-eqSens   = input.float (0.15,  "Equal H/L Toleranz %", minval=0.01, step=0.01, group="Liquidität")
-slMethod = input.string("Fixed %", "SL Methode",       options=["Fixed %","ATR"], group="Trade")
-slBuf    = input.float (0.15,  "SL Puffer %",          minval=0.01, step=0.01, group="Trade")
-atrLen   = input.int   (14,    "ATR Periode",          minval=1,    group="Trade")
-atrMult  = input.float (1.5,   "ATR Multiplikator",   minval=0.1,  step=0.1,  group="Trade")
-rrRatio  = input.float (2.5,   "Risk/Reward Ratio",   minval=0.5,  step=0.1,  group="Trade")
-
-useTimeFilter = input.bool(false, "Zeitfilter",         group="Zeitfilter")
-sessionStart  = input.int (8,    "Start Stunde (UTC)", minval=0, maxval=23, group="Zeitfilter")
-sessionEnd    = input.int (20,   "End Stunde (UTC)",   minval=0, maxval=23, group="Zeitfilter")
-
-showMarkers = input.bool(true, "Entry Marker",    group="Anzeige")
-showStruct  = input.bool(true, "Strukturlabels",  group="Anzeige")
-showBG      = input.bool(false,"Trend-Hintergrund",group="Anzeige")
+swingLen    = input.int   (10,    "Swing Length",           minval=3,    group="Struktur")
+minBoS      = input.int   (2,     "Min. BoS vor CHoCH",    minval=1,    group="Struktur")
+eqSens      = input.float (0.2,   "Equal H/L Toleranz %",  minval=0.01, step=0.01, group="Liquidität")
+minSweepPct = input.float (0.05,  "Min. Sweep-Pierce %",   minval=0.01, step=0.01, group="Liquidität")
+slMethod    = input.string("Fixed %", "SL Methode",        options=["Fixed %","ATR"], group="Trade")
+slBuf       = input.float (0.1,   "SL Puffer %",           minval=0.01, step=0.01, group="Trade")
+atrLen      = input.int   (14,    "ATR Periode",           minval=1,    group="Trade")
+atrMult     = input.float (1.5,   "ATR Multiplikator",     minval=0.1,  step=0.1,  group="Trade")
+rrRatio     = input.float (2.5,   "Risk/Reward Ratio",     minval=0.5,  step=0.1,  group="Trade")
+useTimeFilter = input.bool(false, "Zeitfilter",            group="Zeitfilter")
+sessionStart  = input.int (8,     "Start Stunde (UTC)",    minval=0, maxval=23, group="Zeitfilter")
+sessionEnd    = input.int (20,    "End Stunde (UTC)",      minval=0, maxval=23, group="Zeitfilter")
+showStruct    = input.bool(true,  "Strukturlabels",        group="Anzeige")
 
 // ─── Zeitfilter & ATR ─────────────────────────────────────────────────────────
 inSession = not useTimeFilter or (hour(time, "UTC") >= sessionStart and hour(time, "UTC") < sessionEnd)
@@ -59,26 +60,37 @@ if not na(pl)
     slVal  := pl
     slBar  := bar_index[swingLen]
 
-// ─── Marktstruktur mit Edge-Detection ────────────────────────────────────────
+// ─── Marktstruktur ────────────────────────────────────────────────────────────
 var int   trend        = 0
 var float lastBrknHigh = na
 var float lastBrknLow  = na
+var int   bosUpCount   = 0
+var int   bosDownCount = 0
 
 newHighBreak = not na(shVal) and close > shVal and (na(lastBrknHigh) or shVal != lastBrknHigh)
 newLowBreak  = not na(slVal) and close < slVal and (na(lastBrknLow)  or slVal != lastBrknLow)
 
-chochUp   = newHighBreak and trend == -1
-chochDown = newLowBreak  and trend ==  1
-bosUp     = newHighBreak and trend >= 0 and not chochUp
-bosDown   = newLowBreak  and trend <= 0 and not chochDown
+bullBody = close > open
+bearBody = close < open
+
+chochUp   = newHighBreak and trend == -1 and bullBody and bosDownCount >= minBoS
+chochDown = newLowBreak  and trend ==  1 and bearBody and bosUpCount   >= minBoS
+bosUp     = newHighBreak and trend >= 0  and not chochUp
+bosDown   = newLowBreak  and trend <= 0  and not chochDown
 
 if chochUp or bosUp
     trend        := 1
     lastBrknHigh := shVal
+    bosUpCount   := chochUp ? 0 : bosUpCount + 1
+    if chochUp
+        bosDownCount := 0
 
 if chochDown or bosDown
-    trend       := -1
-    lastBrknLow := slVal
+    trend         := -1
+    lastBrknLow   := slVal
+    bosDownCount  := chochDown ? 0 : bosDownCount + 1
+    if chochDown
+        bosUpCount := 0
 
 // ─── Equal Highs / Lows ───────────────────────────────────────────────────────
 eqThresh = eqSens / 100.0
@@ -90,19 +102,21 @@ var float eqHighLvl = na
 var float eqLowLvl  = na
 
 if isEQH
-    eqHighLvl := math.max(shVal, shVal2)
+    eqHighLvl := shVal2 <= shVal ? shVal2 : shVal
 
 if isEQL
-    eqLowLvl := math.min(slVal, slVal2)
+    eqLowLvl := slVal2 >= slVal ? slVal2 : slVal
 
 // ─── Liquiditätssweep ─────────────────────────────────────────────────────────
+minPierce = minSweepPct / 100.0
+
 var bool  pendingShort   = false
 var float pendingShortSL = na
 var bool  pendingLong    = false
 var float pendingLongSL  = na
 
-highSwept = not na(eqHighLvl) and trend == 1 and high > eqHighLvl and close < eqHighLvl
-lowSwept  = not na(eqLowLvl)  and trend == -1 and low < eqLowLvl  and close > eqLowLvl
+highSwept = not na(eqHighLvl) and trend == 1 and high > eqHighLvl * (1.0 + minPierce) and close < eqHighLvl
+lowSwept  = not na(eqLowLvl)  and trend == -1 and low < eqLowLvl  * (1.0 - minPierce) and close > eqLowLvl
 
 if highSwept
     pendingShort   := true
@@ -114,20 +128,19 @@ if lowSwept
     pendingLongSL  := slMethod == "ATR" ? low - atr * atrMult : low * (1.0 - slBuf / 100.0)
     eqLowLvl       := na
 
-// Pending löschen wenn Trendstruktur sich gegen das Setup dreht (neuer BoS falsche Richtung)
 if bosDown and pendingShort
     pendingShort := false
 if bosUp and pendingLong
     pendingLong := false
 
 // ─── Signale & Trade-Ausführung ───────────────────────────────────────────────
-noPos     = strategy.position_size == 0
-shortSig  = pendingShort and chochDown and noPos and inSession
-longSig   = pendingLong  and chochUp   and noPos and inSession
+noPos    = strategy.position_size == 0
+shortSig = pendingShort and chochDown and noPos and inSession
+longSig  = pendingLong  and chochUp   and noPos and inSession
 
 if shortSig
     sl_s = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
-    rsk  = math.max(sl_s - close, close * 0.0001)
+    rsk  = math.max(sl_s - close, close * 0.0005)
     tp_s = close - rsk * rrRatio
     strategy.entry("Short", strategy.short, comment="SHORT")
     strategy.exit("Short Exit", from_entry="Short", stop=sl_s, limit=tp_s,
@@ -136,7 +149,7 @@ if shortSig
 
 if longSig
     sl_l = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
-    rsk  = math.max(close - sl_l, close * 0.0001)
+    rsk  = math.max(close - sl_l, close * 0.0005)
     tp_l = close + rsk * rrRatio
     strategy.entry("Long", strategy.long, comment="LONG")
     strategy.exit("Long Exit", from_entry="Long", stop=sl_l, limit=tp_l,
@@ -144,28 +157,25 @@ if longSig
     pendingLong := false
 
 // ─── Visuals ──────────────────────────────────────────────────────────────────
-plotshape(showMarkers and longSig,  "Long",  shape.triangleup,   location.belowbar,
+plotshape(longSig,  "Long",  shape.triangleup,   location.belowbar,
           color.new(color.green, 0), size=size.large)
-plotshape(showMarkers and shortSig, "Short", shape.triangledown, location.abovebar,
+plotshape(shortSig, "Short", shape.triangledown, location.abovebar,
           color.new(color.red,   0), size=size.large)
 
 if showStruct
     if bosUp
         label.new(bar_index, high, "BoS",
-                  style=label.style_label_down, color=color.new(color.teal, 20),
+                  style=label.style_label_down, color=color.new(color.teal, 25),
                   textcolor=color.white, size=size.small)
     if bosDown
-        label.new(bar_index, low,  "BoS",
-                  style=label.style_label_up, color=color.new(color.maroon, 20),
+        label.new(bar_index, low, "BoS",
+                  style=label.style_label_up, color=color.new(color.maroon, 25),
                   textcolor=color.white, size=size.small)
     if chochUp
-        label.new(bar_index, low,  "CHoCH",
-                  style=label.style_label_up, color=color.new(color.lime, 15),
-                  textcolor=color.black, size=size.small)
+        label.new(bar_index, low, "CHoCH",
+                  style=label.style_label_up, color=color.new(color.lime, 10),
+                  textcolor=color.black, size=size.normal)
     if chochDown
         label.new(bar_index, high, "CHoCH",
-                  style=label.style_label_down, color=color.new(color.orange, 15),
-                  textcolor=color.black, size=size.small)
-
-bgcolor(showBG and trend ==  1 ? color.new(color.green, 94) : na, title="Bullish BG")
-bgcolor(showBG and trend == -1 ? color.new(color.red,   94) : na, title="Bearish BG")
+                  style=label.style_label_down, color=color.new(color.orange, 10),
+                  textcolor=color.black, size=size.normal)
