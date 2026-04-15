@@ -58,8 +58,8 @@ var int   trend          = 0
 var float lastBrknHigh   = na   // zuletzt gebrochenes Swing-Hoch
 var float lastBrknLow    = na   // zuletzt gebrochenes Swing-Tief
 
-newHighBreak = not na(shVal) and close > shVal and shVal != lastBrknHigh
-newLowBreak  = not na(slVal) and close < slVal and slVal != lastBrknLow
+newHighBreak = not na(shVal) and close > shVal and (na(lastBrknHigh) or shVal != lastBrknHigh)
+newLowBreak  = not na(slVal) and close < slVal and (na(lastBrknLow)  or slVal != lastBrknLow)
 
 chochUp   = newHighBreak and trend == -1
 chochDown = newLowBreak  and trend ==  1
@@ -109,25 +109,25 @@ var line  eqLowLine  = na
 if isEQH
     if not na(eqHighLine)
         line.delete(eqHighLine)
-    eqHighLvl := (shVal + shVal2) / 2.0
+    eqHighLvl := math.max(shVal, shVal2)   // exakt am höchsten Wick
     if showEQ and not na(shBar2)
-        eqHighLine := line.new(shBar2, eqHighLvl, bar_index + 20, eqHighLvl,
-                               color=color.new(color.orange, 20), width=1,
+        eqHighLine := line.new(shBar2, eqHighLvl, bar_index, eqHighLvl,
+                               color=color.new(color.orange, 20), width=2,
                                style=line.style_dashed, extend=extend.right)
-        label.new(shBar2, eqHighLvl, "EQH",
-                  style=label.style_label_right, color=color.new(color.orange, 30),
+        label.new(bar_index, eqHighLvl, "EQH",
+                  style=label.style_label_left, color=color.new(color.orange, 30),
                   textcolor=color.white, size=size.tiny)
 
 if isEQL
     if not na(eqLowLine)
         line.delete(eqLowLine)
-    eqLowLvl := (slVal + slVal2) / 2.0
+    eqLowLvl := math.min(slVal, slVal2)    // exakt am tiefsten Wick
     if showEQ and not na(slBar2)
-        eqLowLine := line.new(slBar2, eqLowLvl, bar_index + 20, eqLowLvl,
-                              color=color.new(color.aqua, 20), width=1,
+        eqLowLine := line.new(slBar2, eqLowLvl, bar_index, eqLowLvl,
+                              color=color.new(color.aqua, 20), width=2,
                               style=line.style_dashed, extend=extend.right)
-        label.new(slBar2, eqLowLvl, "EQL",
-                  style=label.style_label_right, color=color.new(color.aqua, 30),
+        label.new(bar_index, eqLowLvl, "EQL",
+                  style=label.style_label_left, color=color.new(color.aqua, 30),
                   textcolor=color.white, size=size.tiny)
 
 // ─── Liquiditätssweep ─────────────────────────────────────────────────────────
@@ -141,23 +141,29 @@ lowSwept  = not na(eqLowLvl)  and trend == -1 and low < eqLowLvl  and close > eq
 
 if highSwept
     pendingShort   := true
-    pendingShortSL := eqHighLvl * (1.0 + slBuf / 100.0)
+    pendingShortSL := high * (1.0 + slBuf / 100.0)   // SL über dem Sweep-Wick
     eqHighLvl      := na
     if not na(eqHighLine)
+        line.set_x2(eqHighLine, bar_index)            // Linie endet am Sweep-Bar
+        line.set_extend(eqHighLine, extend.none)
         line.set_color(eqHighLine, color.new(color.orange, 0))
+        line.set_width(eqHighLine, 1)
     if showEQ
-        label.new(bar_index, high, "Liq. Sweep",
+        label.new(bar_index, high, "Sweep",
                   style=label.style_label_down, color=color.new(color.orange, 0),
                   textcolor=color.white, size=size.tiny)
 
 if lowSwept
     pendingLong    := true
-    pendingLongSL  := eqLowLvl * (1.0 - slBuf / 100.0)
+    pendingLongSL  := low * (1.0 - slBuf / 100.0)    // SL unter dem Sweep-Wick
     eqLowLvl       := na
     if not na(eqLowLine)
+        line.set_x2(eqLowLine, bar_index)
+        line.set_extend(eqLowLine, extend.none)
         line.set_color(eqLowLine, color.new(color.aqua, 0))
+        line.set_width(eqLowLine, 1)
     if showEQ
-        label.new(bar_index, low, "Liq. Sweep",
+        label.new(bar_index, low, "Sweep",
                   style=label.style_label_up, color=color.new(color.aqua, 0),
                   textcolor=color.white, size=size.tiny)
 
