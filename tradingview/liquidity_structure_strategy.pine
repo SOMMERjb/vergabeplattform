@@ -18,9 +18,9 @@ strategy("Liquidity → Structure Shift [Strategy]",
 
 // ─── Inputs ───────────────────────────────────────────────────────────────────
 swingLen    = input.int   (10,    "Swing Length",           minval=3,    group="Struktur")
-minBoS      = input.int   (2,     "Min. BoS vor CHoCH",    minval=1,    group="Struktur")
+minBoS      = input.int   (1,     "Min. BoS vor CHoCH",    minval=1,    group="Struktur")
 eqSens      = input.float (0.2,   "Equal H/L Toleranz %",  minval=0.01, step=0.01, group="Liquidität")
-minSweepPct = input.float (0.05,  "Min. Sweep-Pierce %",   minval=0.01, step=0.01, group="Liquidität")
+minSweepPct = input.float (0.0,   "Min. Sweep-Pierce %",   minval=0.0,  step=0.01, group="Liquidität")
 slMethod    = input.string("Fixed %", "SL Methode",        options=["Fixed %","ATR"], group="Trade")
 slBuf       = input.float (0.1,   "SL Puffer %",           minval=0.01, step=0.01, group="Trade")
 atrLen      = input.int   (14,    "ATR Periode",           minval=1,    group="Trade")
@@ -115,8 +115,8 @@ var float pendingShortSL = na
 var bool  pendingLong    = false
 var float pendingLongSL  = na
 
-highSwept = not na(eqHighLvl) and trend == 1 and high > eqHighLvl * (1.0 + minPierce) and close < eqHighLvl
-lowSwept  = not na(eqLowLvl)  and trend == -1 and low < eqLowLvl  * (1.0 - minPierce) and close > eqLowLvl
+highSwept = not na(eqHighLvl) and trend == 1  and high >= eqHighLvl * (1.0 + minPierce) and close < eqHighLvl
+lowSwept  = not na(eqLowLvl)  and trend == -1 and low  <= eqLowLvl  * (1.0 - minPierce) and close > eqLowLvl
 
 if highSwept
     pendingShort   := true
