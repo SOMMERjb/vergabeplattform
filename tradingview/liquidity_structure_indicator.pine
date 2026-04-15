@@ -109,11 +109,8 @@ if showCHoCH
 // ─── Equal Highs / Lows (Liquiditätszonen) ────────────────────────────────────
 eqThresh = eqSens / 100.0
 
-isEQH = not na(ph) and not na(shVal) and not na(shVal2) and
-        math.abs(shVal - shVal2) / shVal2 <= eqThresh
-
-isEQL = not na(pl) and not na(slVal) and not na(slVal2) and
-        math.abs(slVal - slVal2) / slVal2 <= eqThresh
+isEQH = not na(ph) and not na(shVal) and not na(shVal2) and math.abs(shVal - shVal2) / shVal2 <= eqThresh
+isEQL = not na(pl) and not na(slVal) and not na(slVal2) and math.abs(slVal - slVal2) / slVal2 <= eqThresh
 
 var float eqHighLvl = na
 var float eqLowLvl  = na
