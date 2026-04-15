@@ -1,0 +1,207 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════
+//  Liquidity → Structure Shift  |  STRATEGY (Backtesting)
+//  Strategie: wizcapitals – "Simple liquidity → structure shift setup"
+//
+//  Einstiegslogik (Short-Beispiel):
+//  1. Bullischer Trend (BoS nach oben)
+//  2. Equal Highs erkannt → Liquiditätszone
+//  3. Wick sweept die EQH, Close wieder darunter  →  Sweep bestätigt
+//  4. CHoCH nach unten (Close < letztes Swing-Tief)  →  SHORT Entry
+//  5. Stop-Loss: über dem gesweepten Hoch + Puffer
+//  6. Take-Profit: Entry − Risiko × RR-Ratio
+//
+//  Spiegelverkehrt für Long-Setups.
+// ══════════════════════════════════════════════════════════════════════════════
+strategy("Liquidity → Structure Shift [Strategy]",
+         overlay               = true,
+         default_qty_type      = strategy.percent_of_equity,
+         default_qty_value     = 10,
+         commission_type       = strategy.commission.percent,
+         commission_value      = 0.05,
+         slippage              = 2,
+         initial_capital       = 10000,
+         pyramiding            = 0,
+         calc_on_every_tick    = false)
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+swingLen  = input.int   (10,    "Swing Length",             minval=3,   group="Struktur")
+eqSens    = input.float (0.15,  "Equal H/L Toleranz %",    minval=0.01,step=0.01, group="Liquidität")
+
+// Stop-Loss-Methode
+slMethod  = input.string("Fixed %", "SL Methode",
+                          options=["Fixed %", "ATR"], group="Trade")
+slBuf     = input.float (0.15,  "SL Puffer %",             minval=0.01,step=0.01, group="Trade",
+                          tooltip="Nur bei Methode 'Fixed %'")
+atrLen    = input.int   (14,    "ATR Periode",              minval=1,   group="Trade",
+                          tooltip="Nur bei Methode 'ATR'")
+atrMult   = input.float (1.5,   "ATR Multiplikator",       minval=0.1, step=0.1,  group="Trade",
+                          tooltip="Nur bei Methode 'ATR'")
+rrRatio   = input.float (2.5,   "Risk/Reward Ratio",       minval=0.5, step=0.1,  group="Trade")
+
+// Zeitfilter
+useTimeFilter = input.bool  (false, "Zeitfilter aktivieren", group="Zeitfilter")
+sessionStart  = input.int   (8,     "Start Stunde (UTC)",   minval=0, maxval=23,  group="Zeitfilter")
+sessionEnd    = input.int   (20,    "End Stunde (UTC)",     minval=0, maxval=23,  group="Zeitfilter")
+
+// Anzeige
+showMarkers = input.bool(true, "Entry/Exit Marker", group="Anzeige")
+showBG      = input.bool(true, "Trend-Hintergrund", group="Anzeige")
+
+// ─── Zeitfilter ───────────────────────────────────────────────────────────────
+inSession = not useTimeFilter or
+            (hour(time, "UTC") >= sessionStart and hour(time, "UTC") < sessionEnd)
+
+// ─── ATR ─────────────────────────────────────────────────────────────────────
+atr = ta.atr(atrLen)
+
+// ─── Swing High / Low Erkennung ───────────────────────────────────────────────
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow (low,  swingLen, swingLen)
+
+var float shVal  = na
+var int   shBar  = na
+var float shVal2 = na
+var int   shBar2 = na
+var float slVal  = na
+var int   slBar  = na
+var float slVal2 = na
+var int   slBar2 = na
+
+if not na(ph)
+    shVal2 := shVal
+    shBar2 := shBar
+    shVal  := ph
+    shBar  := bar_index[swingLen]
+
+if not na(pl)
+    slVal2 := slVal
+    slBar2 := slBar
+    slVal  := pl
+    slBar  := bar_index[swingLen]
+
+// ─── Marktstruktur ────────────────────────────────────────────────────────────
+var int trend = 0
+
+chochUp   = not na(shVal) and close > shVal and trend == -1
+chochDown = not na(slVal) and close < slVal and trend ==  1
+bosUp     = not na(shVal) and close > shVal and trend >= 0 and not chochUp
+bosDown   = not na(slVal) and close < slVal and trend <= 0 and not chochDown
+
+if chochUp  or bosUp
+    trend := 1
+if chochDown or bosDown
+    trend := -1
+
+// ─── Equal Highs / Lows ───────────────────────────────────────────────────────
+eqThresh = eqSens / 100.0
+
+isEQH = not na(ph) and not na(shVal) and not na(shVal2) and
+        math.abs(shVal - shVal2) / shVal2 <= eqThresh
+
+isEQL = not na(pl) and not na(slVal) and not na(slVal2) and
+        math.abs(slVal - slVal2) / slVal2 <= eqThresh
+
+var float eqHighLvl = na
+var float eqLowLvl  = na
+
+if isEQH
+    eqHighLvl := (shVal + shVal2) / 2.0
+
+if isEQL
+    eqLowLvl := (slVal + slVal2) / 2.0
+
+// ─── Liquiditätssweep ─────────────────────────────────────────────────────────
+var bool  pendingShort   = false
+var float pendingShortSL = na
+var bool  pendingLong    = false
+var float pendingLongSL  = na
+
+highSwept = not na(eqHighLvl) and trend == 1 and
+            high > eqHighLvl and close < eqHighLvl
+
+lowSwept  = not na(eqLowLvl)  and trend == -1 and
+            low  < eqLowLvl  and close > eqLowLvl
+
+if highSwept
+    pendingShort   := true
+    pendingShortSL := slMethod == "ATR" ?
+                      high + atr * atrMult :
+                      eqHighLvl * (1.0 + slBuf / 100.0)
+    eqHighLvl      := na
+
+if lowSwept
+    pendingLong    := true
+    pendingLongSL  := slMethod == "ATR" ?
+                      low - atr * atrMult :
+                      eqLowLvl * (1.0 - slBuf / 100.0)
+    eqLowLvl       := na
+
+// Pending-Signal zurücksetzen wenn Trend sich gegen uns dreht
+if trend == -1 and not chochDown
+    pendingShort := false
+if trend ==  1 and not chochUp
+    pendingLong  := false
+
+// ─── Einstiegssignale ─────────────────────────────────────────────────────────
+noPos      = strategy.position_size == 0
+shortSig   = pendingShort and chochDown and noPos and inSession
+longSig    = pendingLong  and chochUp   and noPos and inSession
+
+// ─── Trades ausführen ─────────────────────────────────────────────────────────
+if shortSig
+    sl_price = na(pendingShortSL) ?
+               (na(shVal) ? close * (1.0 + slBuf/100.0) : shVal * (1.0 + slBuf/100.0)) :
+               pendingShortSL
+    risk      = sl_price - close
+    tp_price  = close - risk * rrRatio
+
+    strategy.entry("Short", strategy.short, comment="SHORT")
+    strategy.exit("Short Exit", from_entry="Short",
+                  stop  = sl_price,
+                  limit = tp_price,
+                  comment_loss = "SL", comment_profit = "TP")
+    pendingShort := false
+
+if longSig
+    sl_price = na(pendingLongSL) ?
+               (na(slVal) ? close * (1.0 - slBuf/100.0) : slVal * (1.0 - slBuf/100.0)) :
+               pendingLongSL
+    risk      = close - sl_price
+    tp_price  = close + risk * rrRatio
+
+    strategy.entry("Long", strategy.long, comment="LONG")
+    strategy.exit("Long Exit", from_entry="Long",
+                  stop  = sl_price,
+                  limit = tp_price,
+                  comment_loss = "SL", comment_profit = "TP")
+    pendingLong := false
+
+// ─── Visuals ──────────────────────────────────────────────────────────────────
+plotshape(showMarkers and longSig,  "Long Entry",  shape.triangleup,
+          location.belowbar, color.new(color.green, 0), size=size.large)
+plotshape(showMarkers and shortSig, "Short Entry", shape.triangledown,
+          location.abovebar, color.new(color.red,   0), size=size.large)
+
+// BoS / CHoCH Labels (optional, deaktivierbar für saubere Backtest-Ansicht)
+showStruct = input.bool(true, "Strukturlabels", group="Anzeige")
+if showStruct
+    if bosUp
+        label.new(bar_index, high, "BoS ▲",
+                  style=label.style_label_down, color=color.new(color.teal, 30),
+                  textcolor=color.white, size=size.small)
+    if bosDown
+        label.new(bar_index, low,  "BoS ▼",
+                  style=label.style_label_up, color=color.new(color.red, 30),
+                  textcolor=color.white, size=size.small)
+    if chochUp
+        label.new(bar_index, low,  "CHoCH ▲",
+                  style=label.style_label_up, color=color.new(color.lime, 20),
+                  textcolor=color.black, size=size.small)
+    if chochDown
+        label.new(bar_index, high, "CHoCH ▼",
+                  style=label.style_label_down, color=color.new(color.orange, 20),
+                  textcolor=color.black, size=size.small)
+
+bgcolor(showBG and trend ==  1 ? color.new(color.green, 94) : na, title="Bullish BG")
+bgcolor(showBG and trend == -1 ? color.new(color.red,   94) : na, title="Bearish BG")
