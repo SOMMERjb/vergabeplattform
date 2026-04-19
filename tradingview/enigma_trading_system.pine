@@ -1,0 +1,280 @@
+//@version=6
+indicator("Enigma Trading System", overlay=true, shorttitle="ETS",
+         max_lines_count=100, max_labels_count=200, max_boxes_count=50)
+
+// ═══════════════════════════════════════════════════════════════
+// EINSTELLUNGEN
+// ═══════════════════════════════════════════════════════════════
+grpVis = "Darstellung"
+bullCol    = input.color(color.new(color.green, 0),  "Bullish Farbe",          group=grpVis)
+bearCol    = input.color(color.new(color.red, 0),    "Bearish Farbe",          group=grpVis)
+crtCol     = input.color(color.new(color.orange, 0), "CRT Farbe",              group=grpVis)
+showCRT    = input.bool(true,  "H1 CRT Levels zeigen",                         group=grpVis)
+showBB     = input.bool(true,  "Breaker Blocks zeigen",                        group=grpVis)
+showBOSlbl = input.bool(true,  "H1 BOS Labels zeigen",                         group=grpVis)
+showTSlbl  = input.bool(true,  "Turtle Soup Labels zeigen",                    group=grpVis)
+lineLen    = input.int(30, "Linienlänge (Bars)", minval=5,                     group=grpVis)
+
+grpFilter = "Filter"
+minAtrMult = input.float(0.5, "Min. Kerzengröße (ATR-Faktor)", step=0.1,      group=grpFilter)
+
+// ═══════════════════════════════════════════════════════════════
+// H1 MULTI-TIMEFRAME DATEN
+// ═══════════════════════════════════════════════════════════════
+h1_high   = request.security(syminfo.tickerid, "60", high,     lookahead=barmerge.lookahead_off)
+h1_low    = request.security(syminfo.tickerid, "60", low,      lookahead=barmerge.lookahead_off)
+h1_close  = request.security(syminfo.tickerid, "60", close,    lookahead=barmerge.lookahead_off)
+h1_open   = request.security(syminfo.tickerid, "60", open,     lookahead=barmerge.lookahead_off)
+h1_close1 = request.security(syminfo.tickerid, "60", close[1], lookahead=barmerge.lookahead_on)
+h1_open1  = request.security(syminfo.tickerid, "60", open[1],  lookahead=barmerge.lookahead_on)
+h1_high1  = request.security(syminfo.tickerid, "60", high[1],  lookahead=barmerge.lookahead_on)
+h1_close2 = request.security(syminfo.tickerid, "60", close[2], lookahead=barmerge.lookahead_on)
+h1_open2  = request.security(syminfo.tickerid, "60", open[2],  lookahead=barmerge.lookahead_on)
+h1_high2  = request.security(syminfo.tickerid, "60", high[2],  lookahead=barmerge.lookahead_on)
+h1_low2   = request.security(syminfo.tickerid, "60", low[2],   lookahead=barmerge.lookahead_on)
+h1_atr    = request.security(syminfo.tickerid, "60", ta.atr(14), lookahead=barmerge.lookahead_off)
+h1_time   = request.security(syminfo.tickerid, "60", time,     lookahead=barmerge.lookahead_off)
+
+h1_new_bar = ta.change(h1_time) != 0
+m3_atr     = ta.atr(14)
+
+// ═══════════════════════════════════════════════════════════════
+// H1 CRT – CANDLE RANGE THEORY
+// Nur beim Start einer neuen H1-Kerze aktualisieren (1x pro Stunde)
+// ═══════════════════════════════════════════════════════════════
+var float crt_h      = na
+var float crt_l      = na
+var line  crt_h_line = na
+var line  crt_l_line = na
+
+if h1_new_bar
+    crt_h := h1_high1
+    crt_l := h1_low1
+    if showCRT and not na(crt_h)
+        if not na(crt_h_line)
+            line.delete(crt_h_line)
+        if not na(crt_l_line)
+            line.delete(crt_l_line)
+        crt_h_line := line.new(bar_index, crt_h, bar_index + lineLen, crt_h,
+                               color=crtCol, width=1, style=line.style_dashed)
+        crt_l_line := line.new(bar_index, crt_l, bar_index + lineLen, crt_l,
+                               color=crtCol, width=1, style=line.style_dashed)
+
+// ═══════════════════════════════════════════════════════════════
+// H1 EBL BOS – Kerzenpaar-Erkennung + BOS
+// FIX: Pair nur beim Start neuer H1-Kerze prüfen (einmalig)
+//      BOS-Flag verhindert mehrfaches Auslösen innerhalb einer H1-Kerze
+// ═══════════════════════════════════════════════════════════════
+var float h1_stored_high = na
+var float h1_stored_low  = na
+var bool  h1_bos_up_done   = false
+var bool  h1_bos_down_done = false
+
+if h1_new_bar
+    // Reset für neue H1-Kerze
+    h1_stored_high   := na
+    h1_stored_low    := na
+    h1_bos_up_done   := false
+    h1_bos_down_done := false
+    // Kerzenpaar aus den letzten zwei abgeschlossenen H1-Kerzen prüfen
+    // Bull-Bear-Paar: H1[-2] war bullisch, H1[-1] war bearisch
+    if h1_close2 > h1_open2 and h1_close1 < h1_open1 and
+             (h1_high2 - h1_low2) > minAtrMult * h1_atr
+        h1_stored_high := h1_high2
+    // Bear-Bull-Paar: H1[-2] war bearisch, H1[-1] war bullisch
+    if h1_close2 < h1_open2 and h1_close1 > h1_open1 and
+             (h1_high2 - h1_low2) > minAtrMult * h1_atr
+        h1_stored_low := h1_low2
+
+// BOS-Bestätigung: H1-Close bricht das gespeicherte Level
+// not done-Flag → nur einmal pro H1-Kerze auslösen
+h1_bos_up   = not na(h1_stored_high) and h1_close > h1_stored_high and not h1_bos_up_done
+h1_bos_down = not na(h1_stored_low)  and h1_close < h1_stored_low  and not h1_bos_down_done
+
+// ═══════════════════════════════════════════════════════════════
+// H1 TURTLE SOUP – Fake-Ausbruch
+// FIX: Einmal-Flag pro H1-Kerze verhindert Label-Spam
+// ═══════════════════════════════════════════════════════════════
+var bool ts_bear_done = false
+var bool ts_bull_done = false
+
+if h1_new_bar
+    ts_bear_done := false
+    ts_bull_done := false
+
+ts_bear_raw = not na(crt_h) and h1_high > crt_h and h1_close < crt_h and h1_close < h1_open
+ts_bull_raw = not na(crt_l) and h1_low  < crt_l and h1_close > crt_l and h1_close > h1_open
+
+ts_bear = ts_bear_raw and not ts_bear_done
+ts_bull = ts_bull_raw and not ts_bull_done
+
+if ts_bear
+    ts_bear_done := true
+    if showTSlbl
+        label.new(bar_index, h1_high + m3_atr,
+                  "⚡ TS Short", color=bearCol, style=label.style_label_down,
+                  size=size.small, textcolor=color.white)
+
+if ts_bull
+    ts_bull_done := true
+    if showTSlbl
+        label.new(bar_index, h1_low - m3_atr,
+                  "⚡ TS Long", color=bullCol, style=label.style_label_up,
+                  size=size.small, textcolor=color.white)
+
+// ═══════════════════════════════════════════════════════════════
+// H1 BIAS – Richtungsentscheidung
+// Jede H1-Kerze startet neutral, Bias wird durch BOS/TS gesetzt
+// ═══════════════════════════════════════════════════════════════
+var string h1_bias = "neutral"
+
+if h1_new_bar
+    h1_bias := "neutral"
+
+// BOS setzt Bias (einmalig durch done-Flag gesichert)
+if h1_bos_up
+    h1_bos_up_done := true
+    h1_stored_high := na
+    h1_bias        := "bull"
+    if showBOSlbl
+        label.new(bar_index, low - m3_atr * 2,
+                  "H1 ▲ BOS", color=bullCol, style=label.style_label_up,
+                  size=size.small, textcolor=color.white)
+
+if h1_bos_down
+    h1_bos_down_done := true
+    h1_stored_low    := na
+    h1_bias          := "bear"
+    if showBOSlbl
+        label.new(bar_index, high + m3_atr * 2,
+                  "H1 ▼ BOS", color=bearCol, style=label.style_label_down,
+                  size=size.small, textcolor=color.white)
+
+// Turtle Soup setzt Bias wenn noch neutral
+if ts_bull and h1_bias == "neutral"
+    h1_bias := "bull"
+if ts_bear and h1_bias == "neutral"
+    h1_bias := "bear"
+
+// ═══════════════════════════════════════════════════════════════
+// M3 BREAKER BLOCK
+// FIX: Lock-Flag verhindert mehrfaches Überschreiben des Levels
+// ═══════════════════════════════════════════════════════════════
+var bool  m3_high_locked = false
+var bool  m3_low_locked  = false
+var float m3_stored_high = na
+var float m3_stored_low  = na
+
+m3_bull_bear = (close[1] > open[1] and close < open) and
+               (high[1] - low[1]) > minAtrMult * m3_atr
+m3_bear_bull = (close[1] < open[1] and close > open) and
+               (high[1] - low[1]) > minAtrMult * m3_atr
+
+if m3_bull_bear and not m3_high_locked
+    m3_stored_high := high[1]
+    m3_high_locked := true
+if m3_bear_bull and not m3_low_locked
+    m3_stored_low  := low[1]
+    m3_low_locked  := true
+
+m3_bos_up   = not na(m3_stored_high) and close > m3_stored_high
+m3_bos_down = not na(m3_stored_low)  and close < m3_stored_low
+
+// Nach M3-BOS: Level und Lock zurücksetzen
+if m3_bos_up
+    m3_stored_high := na
+    m3_high_locked := false
+if m3_bos_down
+    m3_stored_low  := na
+    m3_low_locked  := false
+
+var float bb_bull_top    = na
+var float bb_bull_bot    = na
+var float bb_bear_top    = na
+var float bb_bear_bot    = na
+var bool  bb_bull_active = false
+var bool  bb_bear_active = false
+var box   bb_bull_box    = na
+var box   bb_bear_box    = na
+
+// Bullish M3 BOS + H1 Bias bullisch → Breaker Block markieren
+if m3_bos_up and h1_bias == "bull"
+    for i = 1 to 10
+        if close[i] < open[i]
+            bb_bull_top    := open[i]
+            bb_bull_bot    := close[i]
+            bb_bull_active := true
+            if showBB
+                if not na(bb_bull_box)
+                    box.delete(bb_bull_box)
+                bb_bull_box := box.new(bar_index - i, bb_bull_top,
+                                       bar_index + lineLen, bb_bull_bot,
+                                       bgcolor=color.new(bullCol, 80),
+                                       border_color=bullCol, border_width=1)
+            break
+
+// Bearish M3 BOS + H1 Bias bearisch → Breaker Block markieren
+if m3_bos_down and h1_bias == "bear"
+    for i = 1 to 10
+        if close[i] > open[i]
+            bb_bear_top    := close[i]
+            bb_bear_bot    := open[i]
+            bb_bear_active := true
+            if showBB
+                if not na(bb_bear_box)
+                    box.delete(bb_bear_box)
+                bb_bear_box := box.new(bar_index - i, bb_bear_top,
+                                       bar_index + lineLen, bb_bear_bot,
+                                       bgcolor=color.new(bearCol, 80),
+                                       border_color=bearCol, border_width=1)
+            break
+
+// ═══════════════════════════════════════════════════════════════
+// ENTRY SIGNAL – Retest des Breaker Blocks
+// ═══════════════════════════════════════════════════════════════
+bull_entry = bb_bull_active and h1_bias == "bull" and
+             low <= bb_bull_top and close >= bb_bull_bot
+
+bear_entry = bb_bear_active and h1_bias == "bear" and
+             high >= bb_bear_bot and close <= bb_bear_top
+
+bull_sl = bull_entry ? bb_bull_bot - m3_atr * 0.5 : na
+bull_tp = bull_entry ? close + (close - bull_sl) * 2.0 : na
+bear_sl = bear_entry ? bb_bear_top + m3_atr * 0.5 : na
+bear_tp = bear_entry ? close - (bear_sl - close) * 2.0 : na
+
+if bull_entry
+    label.new(bar_index, low - m3_atr * 0.5,
+              "▲ LONG\nSL: "  + str.tostring(bull_sl, format.mintick) +
+              "\nTP: " + str.tostring(bull_tp, format.mintick),
+              color=bullCol, style=label.style_label_up,
+              size=size.normal, textcolor=color.white)
+    if not na(bb_bull_box)
+        box.set_right(bb_bull_box, bar_index)
+    bb_bull_active := false
+
+if bear_entry
+    label.new(bar_index, high + m3_atr * 0.5,
+              "▼ SHORT\nSL: " + str.tostring(bear_sl, format.mintick) +
+              "\nTP: " + str.tostring(bear_tp, format.mintick),
+              color=bearCol, style=label.style_label_down,
+              size=size.normal, textcolor=color.white)
+    if not na(bb_bear_box)
+        box.set_right(bb_bear_box, bar_index)
+    bb_bear_active := false
+
+// ═══════════════════════════════════════════════════════════════
+// ALERTS – JSON für spätere Webhook-Integration
+// ═══════════════════════════════════════════════════════════════
+alertcondition(bull_entry,  title="LONG Entry",
+    message='{"action":"buy","symbol":"{{ticker}}","price":"{{close}}","time":"{{timenow}}"}')
+alertcondition(bear_entry,  title="SHORT Entry",
+    message='{"action":"sell","symbol":"{{ticker}}","price":"{{close}}","time":"{{timenow}}"}')
+alertcondition(h1_bos_up,   title="H1 Bullish BOS",
+    message='{"signal":"h1_bull_bos","symbol":"{{ticker}}","price":"{{close}}"}')
+alertcondition(h1_bos_down, title="H1 Bearish BOS",
+    message='{"signal":"h1_bear_bos","symbol":"{{ticker}}","price":"{{close}}"}')
+alertcondition(ts_bull,     title="Turtle Soup Bullish",
+    message='{"signal":"turtle_bull","symbol":"{{ticker}}","price":"{{close}}"}')
+alertcondition(ts_bear,     title="Turtle Soup Bearish",
+    message='{"signal":"turtle_bear","symbol":"{{ticker}}","price":"{{close}}"}')
