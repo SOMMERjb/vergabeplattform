@@ -21,9 +21,9 @@ eqSens      = input.float (0.2,   "Equal H/L Toleranz %", minval=0.01, step=0.01
 minSweepPct = input.float (0.0,   "Min. Sweep-Pierce %",  minval=0.0,  step=0.01, group="Liquidität")
 slMethod    = input.string("Fixed %", "SL Methode",       options=["Fixed %","ATR"], group="Trade")
 slBuf       = input.float (0.1,   "SL Puffer %",          minval=0.01, step=0.01, group="Trade")
-atrLen      = input.int   (14,    "ATR Periode",          minval=1,    group="Trade")
-atrMult     = input.float (1.5,   "ATR Multiplikator",    minval=0.1,  step=0.1,  group="Trade")
-rrRatio     = input.float (2.5,   "Risk/Reward Ratio",    minval=0.5,  step=0.1,  group="Trade")
+tp1R        = input.float (2.0,   "TP1 (R-Faktor)",       minval=0.5,  step=0.5,  group="Trade")
+tp2R        = input.float (4.0,   "TP2 (R-Faktor)",       minval=0.5,  step=0.5,  group="Trade")
+tp3R        = input.float (7.0,   "TP3 (R-Faktor)",       minval=0.5,  step=0.5,  group="Trade")
 useTimeFilter = input.bool(false, "Zeitfilter",            group="Zeitfilter")
 sessionStart  = input.int (8,     "Start Stunde (UTC)",   minval=0, maxval=23, group="Zeitfilter")
 sessionEnd    = input.int (20,    "End Stunde (UTC)",      minval=0, maxval=23, group="Zeitfilter")
@@ -158,37 +158,44 @@ shortSig = pendingShort and chochDown and noPos and inSession
 longSig  = pendingLong  and chochUp   and noPos and inSession
 
 if shortSig
-    hasFVG  = not na(fvgSTop) and not na(fvgSBot)
-    entryS  = hasFVG ? (fvgSTop + fvgSBot) / 2.0 : close
-    sl_s    = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
-    risk    = math.max(sl_s - entryS, entryS * 0.0005)
-    tp_s    = entryS - risk * rrRatio
+    hasFVG = not na(fvgSTop) and not na(fvgSBot)
+    entryS = hasFVG ? (fvgSTop + fvgSBot) / 2.0 : close
+    sl_s   = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
+    risk   = math.max(sl_s - entryS, entryS * 0.0005)
+    tp1_s  = entryS - risk * tp1R
+    tp2_s  = entryS - risk * tp2R
+    tp3_s  = entryS - risk * tp3R
 
     if hasFVG
         strategy.entry("Short", strategy.short, limit=entryS, comment="SHORT@FVG")
     else
         strategy.entry("Short", strategy.short, comment="SHORT@CHoCH")
 
-    strategy.exit("Short Exit", from_entry="Short", stop=sl_s, limit=tp_s,
-                  comment_loss="SL", comment_profit="TP")
+    // Je 1/3 der Position bei jedem TP schließen
+    strategy.exit("Short TP1", from_entry="Short", qty_percent=33, stop=sl_s, limit=tp1_s, comment_profit="TP1")
+    strategy.exit("Short TP2", from_entry="Short", qty_percent=50, stop=sl_s, limit=tp2_s, comment_profit="TP2")
+    strategy.exit("Short TP3", from_entry="Short",                 stop=sl_s, limit=tp3_s, comment_loss="SL", comment_profit="TP3")
     pendingShort := false
     fvgSTop := na
     fvgSBot := na
 
 if longSig
-    hasFVG  = not na(fvgLBot) and not na(fvgLTop)
-    entryL  = hasFVG ? (fvgLBot + fvgLTop) / 2.0 : close
-    sl_l    = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
-    risk    = math.max(entryL - sl_l, entryL * 0.0005)
-    tp_l    = entryL + risk * rrRatio
+    hasFVG = not na(fvgLBot) and not na(fvgLTop)
+    entryL = hasFVG ? (fvgLBot + fvgLTop) / 2.0 : close
+    sl_l   = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
+    risk   = math.max(entryL - sl_l, entryL * 0.0005)
+    tp1_l  = entryL + risk * tp1R
+    tp2_l  = entryL + risk * tp2R
+    tp3_l  = entryL + risk * tp3R
 
     if hasFVG
         strategy.entry("Long", strategy.long, limit=entryL, comment="LONG@FVG")
     else
         strategy.entry("Long", strategy.long, comment="LONG@CHoCH")
 
-    strategy.exit("Long Exit", from_entry="Long", stop=sl_l, limit=tp_l,
-                  comment_loss="SL", comment_profit="TP")
+    strategy.exit("Long TP1", from_entry="Long", qty_percent=33, stop=sl_l, limit=tp1_l, comment_profit="TP1")
+    strategy.exit("Long TP2", from_entry="Long", qty_percent=50, stop=sl_l, limit=tp2_l, comment_profit="TP2")
+    strategy.exit("Long TP3", from_entry="Long",                 stop=sl_l, limit=tp3_l, comment_loss="SL", comment_profit="TP3")
     pendingLong := false
     fvgLBot := na
     fvgLTop := na
