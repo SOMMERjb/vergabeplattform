@@ -1,0 +1,225 @@
+//@version=6
+// ══════════════════════════════════════════════════════════════════════════════
+//  Liquidity → Structure Shift  |  STRATEGY
+//  FVG-Einstieg: Limit-Order in der Mitte der FVG vor dem CHoCH
+//  Kein FVG gefunden → Market-Order am CHoCH-Close (Fallback)
+// ══════════════════════════════════════════════════════════════════════════════
+strategy("Liquidity → Structure Shift [Strategy]",
+         overlay           = true,
+         default_qty_type  = strategy.percent_of_equity,
+         default_qty_value = 10,
+         commission_type   = strategy.commission.percent,
+         commission_value  = 0.05,
+         slippage          = 2,
+         initial_capital   = 10000,
+         pyramiding        = 0)
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+swingLen    = input.int   (10,    "Swing Length",          minval=3,    group="Struktur")
+minBoS      = input.int   (1,     "Min. BoS vor CHoCH",   minval=1,    group="Struktur")
+eqSens      = input.float (0.2,   "Equal H/L Toleranz %", minval=0.01, step=0.01, group="Liquidität")
+minSweepPct = input.float (0.0,   "Min. Sweep-Pierce %",  minval=0.0,  step=0.01, group="Liquidität")
+slMethod    = input.string("Fixed %", "SL Methode",       options=["Fixed %","ATR"], group="Trade")
+slBuf       = input.float (0.1,   "SL Puffer %",          minval=0.01, step=0.01, group="Trade")
+tp1R        = input.float (2.0,   "TP1 (R-Faktor)",       minval=0.5,  step=0.5,  group="Trade")
+tp2R        = input.float (4.0,   "TP2 (R-Faktor)",       minval=0.5,  step=0.5,  group="Trade")
+tp3R        = input.float (7.0,   "TP3 (R-Faktor)",       minval=0.5,  step=0.5,  group="Trade")
+useTimeFilter = input.bool(false, "Zeitfilter",            group="Zeitfilter")
+sessionStart  = input.int (8,     "Start Stunde (UTC)",   minval=0, maxval=23, group="Zeitfilter")
+sessionEnd    = input.int (20,    "End Stunde (UTC)",      minval=0, maxval=23, group="Zeitfilter")
+showStruct    = input.bool(true,  "Strukturlabels",        group="Anzeige")
+
+inSession = not useTimeFilter or (hour(time, "UTC") >= sessionStart and hour(time, "UTC") < sessionEnd)
+atr       = ta.atr(atrLen)
+
+// ─── Swing Erkennung ──────────────────────────────────────────────────────────
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow (low,  swingLen, swingLen)
+
+var float shVal  = na
+var int   shBar  = na
+var float shVal2 = na
+var int   shBar2 = na
+var float slVal  = na
+var int   slBar  = na
+var float slVal2 = na
+var int   slBar2 = na
+
+if not na(ph)
+    shVal2 := shVal
+    shBar2 := shBar
+    shVal  := ph
+    shBar  := bar_index[swingLen]
+
+if not na(pl)
+    slVal2 := slVal
+    slBar2 := slBar
+    slVal  := pl
+    slBar  := bar_index[swingLen]
+
+// ─── Marktstruktur ────────────────────────────────────────────────────────────
+var int   trend        = 0
+var float lastBrknHigh = na
+var float lastBrknLow  = na
+var int   bosUpCount   = 0
+var int   bosDownCount = 0
+
+newHighBreak = not na(shVal) and close > shVal and (na(lastBrknHigh) or shVal != lastBrknHigh)
+newLowBreak  = not na(slVal) and close < slVal and (na(lastBrknLow)  or slVal != lastBrknLow)
+
+bullBody = close > open
+bearBody = close < open
+
+chochUp   = newHighBreak and trend == -1 and bullBody and bosDownCount >= minBoS
+chochDown = newLowBreak  and trend ==  1 and bearBody and bosUpCount   >= minBoS
+bosUp     = newHighBreak and trend >= 0  and not chochUp
+bosDown   = newLowBreak  and trend <= 0  and not chochDown
+
+if chochUp or bosUp
+    trend        := 1
+    lastBrknHigh := shVal
+    bosUpCount   := chochUp ? 0 : bosUpCount + 1
+    if chochUp
+        bosDownCount := 0
+
+if chochDown or bosDown
+    trend         := -1
+    lastBrknLow   := slVal
+    bosDownCount  := chochDown ? 0 : bosDownCount + 1
+    if chochDown
+        bosUpCount := 0
+
+// ─── Equal Highs / Lows ───────────────────────────────────────────────────────
+eqThresh = eqSens / 100.0
+isEQH = not na(ph) and not na(shVal) and not na(shVal2) and math.abs(shVal - shVal2) / shVal2 <= eqThresh
+isEQL = not na(pl) and not na(slVal) and not na(slVal2) and math.abs(slVal - slVal2) / slVal2 <= eqThresh
+
+var float eqHighLvl = na
+var float eqLowLvl  = na
+
+if isEQH
+    eqHighLvl := shVal2 <= shVal ? shVal2 : shVal
+
+if isEQL
+    eqLowLvl := slVal2 >= slVal ? slVal2 : slVal
+
+// ─── Liquiditätssweep ─────────────────────────────────────────────────────────
+minPierce = minSweepPct / 100.0
+
+var bool  pendingShort   = false
+var float pendingShortSL = na
+var bool  pendingLong    = false
+var float pendingLongSL  = na
+
+highSwept = not na(eqHighLvl) and trend == 1  and high >= eqHighLvl * (1.0 + minPierce) and close < eqHighLvl
+lowSwept  = not na(eqLowLvl)  and trend == -1 and low  <= eqLowLvl  * (1.0 - minPierce) and close > eqLowLvl
+
+if highSwept
+    pendingShort   := true
+    pendingShortSL := slMethod == "ATR" ? high + atr * atrMult : high * (1.0 + slBuf / 100.0)
+    eqHighLvl      := na
+
+if lowSwept
+    pendingLong    := true
+    pendingLongSL  := slMethod == "ATR" ? low - atr * atrMult : low * (1.0 - slBuf / 100.0)
+    eqLowLvl       := na
+
+// ─── FVG Erkennung ────────────────────────────────────────────────────────────
+bearFVG = high < low[2]
+bullFVG = low  > high[2]
+
+var float fvgSTop = na
+var float fvgSBot = na
+var float fvgLBot = na
+var float fvgLTop = na
+
+if pendingShort and bearFVG
+    fvgSTop := low[2]
+    fvgSBot := high
+
+if pendingLong and bullFVG
+    fvgLBot := high[2]
+    fvgLTop := low
+
+// Pending abbrechen
+if bosDown and pendingShort
+    pendingShort := false
+    fvgSTop := na
+    fvgSBot := na
+
+if bosUp and pendingLong
+    pendingLong := false
+    fvgLBot := na
+    fvgLTop := na
+
+// ─── Signale & Trade-Ausführung ───────────────────────────────────────────────
+noPos    = strategy.position_size == 0
+shortSig = pendingShort and chochDown and noPos and inSession
+longSig  = pendingLong  and chochUp   and noPos and inSession
+
+if shortSig
+    hasFVG = not na(fvgSTop) and not na(fvgSBot)
+    entryS = hasFVG ? (fvgSTop + fvgSBot) / 2.0 : close
+    sl_s   = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
+    risk   = math.max(sl_s - entryS, entryS * 0.0005)
+    tp1_s  = entryS - risk * tp1R
+    tp2_s  = entryS - risk * tp2R
+    tp3_s  = entryS - risk * tp3R
+
+    if hasFVG
+        strategy.entry("Short", strategy.short, limit=entryS, comment="SHORT@FVG")
+    else
+        strategy.entry("Short", strategy.short, comment="SHORT@CHoCH")
+
+    // Je 1/3 der Position bei jedem TP schließen
+    strategy.exit("Short TP1", from_entry="Short", qty_percent=33, stop=sl_s, limit=tp1_s, comment_profit="TP1")
+    strategy.exit("Short TP2", from_entry="Short", qty_percent=50, stop=sl_s, limit=tp2_s, comment_profit="TP2")
+    strategy.exit("Short TP3", from_entry="Short",                 stop=sl_s, limit=tp3_s, comment_loss="SL", comment_profit="TP3")
+    pendingShort := false
+    fvgSTop := na
+    fvgSBot := na
+
+if longSig
+    hasFVG = not na(fvgLBot) and not na(fvgLTop)
+    entryL = hasFVG ? (fvgLBot + fvgLTop) / 2.0 : close
+    sl_l   = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
+    risk   = math.max(entryL - sl_l, entryL * 0.0005)
+    tp1_l  = entryL + risk * tp1R
+    tp2_l  = entryL + risk * tp2R
+    tp3_l  = entryL + risk * tp3R
+
+    if hasFVG
+        strategy.entry("Long", strategy.long, limit=entryL, comment="LONG@FVG")
+    else
+        strategy.entry("Long", strategy.long, comment="LONG@CHoCH")
+
+    strategy.exit("Long TP1", from_entry="Long", qty_percent=33, stop=sl_l, limit=tp1_l, comment_profit="TP1")
+    strategy.exit("Long TP2", from_entry="Long", qty_percent=50, stop=sl_l, limit=tp2_l, comment_profit="TP2")
+    strategy.exit("Long TP3", from_entry="Long",                 stop=sl_l, limit=tp3_l, comment_loss="SL", comment_profit="TP3")
+    pendingLong := false
+    fvgLBot := na
+    fvgLTop := na
+
+// ─── Visuals ──────────────────────────────────────────────────────────────────
+plotshape(longSig,  "Long",  shape.triangleup,   location.belowbar,
+          color.new(color.green, 0), size=size.large)
+plotshape(shortSig, "Short", shape.triangledown, location.abovebar,
+          color.new(color.red,   0), size=size.large)
+
+if showStruct
+    if bosUp
+        label.new(bar_index, high, "BoS",
+                  style=label.style_label_down, color=color.new(color.teal, 25),
+                  textcolor=color.white, size=size.small)
+    if bosDown
+        label.new(bar_index, low, "BoS",
+                  style=label.style_label_up, color=color.new(color.maroon, 25),
+                  textcolor=color.white, size=size.small)
+    if chochUp
+        label.new(bar_index, low, "CHoCH",
+                  style=label.style_label_up, color=color.new(color.lime, 10),
+                  textcolor=color.black, size=size.normal)
+    if chochDown
+        label.new(bar_index, high, "CHoCH",
+                  style=label.style_label_down, color=color.new(color.orange, 10),
+                  textcolor=color.black, size=size.normal)

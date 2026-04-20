@@ -1,0 +1,437 @@
+//@version=6
+// ══════════════════════════════════════════════════════════════════════════════
+//  Liquidity → Structure Shift  |  INDICATOR
+//  Visual: SL=rot, Entry=blau, TP1/TP2/TP3=grün (dashed→solid)
+//  TP-Hit: "✓ OK" Label + × Marker auf der Linie
+//  Kette: BoS → EQH/EQL → Sweep → FVG → CHoCH → Limit-Entry in FVG
+// ══════════════════════════════════════════════════════════════════════════════
+indicator("Liquidity → Structure Shift [Indicator]",
+          overlay          = true,
+          max_bars_back    = 500,
+          max_lines_count  = 500,
+          max_labels_count = 400,
+          max_boxes_count  = 60)
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+swingLen    = input.int   (10,   "Swing Length",           minval=3,    group="Struktur")
+minBoS      = input.int   (1,    "Min. BoS vor CHoCH",    minval=1,    group="Struktur")
+eqSens      = input.float (0.2,  "Equal H/L Toleranz %",  minval=0.01, step=0.01, group="Liquidität")
+minSweepPct = input.float (0.0,  "Min. Sweep-Pierce %",   minval=0.0,  step=0.01, group="Liquidität")
+slBuf       = input.float (0.1,  "SL Puffer %",           minval=0.01, step=0.01, group="Trade")
+tp1R        = input.float (2.0,  "TP1 (R-Faktor)",        minval=0.5,  step=0.5,  group="Trade")
+tp2R        = input.float (4.0,  "TP2 (R-Faktor)",        minval=0.5,  step=0.5,  group="Trade")
+tp3R        = input.float (7.0,  "TP3 (R-Faktor)",        minval=0.5,  step=0.5,  group="Trade")
+maxTrades   = input.int   (4,    "Letzte N Trades",        minval=1, maxval=8,    group="Anzeige")
+showBoS     = input.bool  (true, "BoS Marker",             group="Anzeige")
+showCHoCH   = input.bool  (true, "CHoCH Label",            group="Anzeige")
+showEQ      = input.bool  (true, "EQH / EQL Linien",       group="Anzeige")
+showFVG     = input.bool  (true, "FVG Einstiegszone",      group="Anzeige")
+showTrade   = input.bool  (true, "SL / TP Linien",         group="Anzeige")
+
+// ─── Farben ───────────────────────────────────────────────────────────────────
+colSL    = color.new(color.red,         0)
+colEntry = color.new(#2196F3,           0)   // Blau wie im Referenzbild
+colTP    = color.new(color.lime,        0)
+colFVGs  = color.new(color.red,        88)
+colFVGl  = color.new(color.lime,       88)
+
+// ─── Swing Erkennung ──────────────────────────────────────────────────────────
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow (low,  swingLen, swingLen)
+
+var float shVal  = na
+var int   shBar  = na
+var float shVal2 = na
+var int   shBar2 = na
+var float slVal  = na
+var int   slBar  = na
+var float slVal2 = na
+var int   slBar2 = na
+
+if not na(ph)
+    shVal2 := shVal
+    shBar2 := shBar
+    shVal  := ph
+    shBar  := bar_index[swingLen]
+
+if not na(pl)
+    slVal2 := slVal
+    slBar2 := slBar
+    slVal  := pl
+    slBar  := bar_index[swingLen]
+
+// ─── Marktstruktur ────────────────────────────────────────────────────────────
+var int   trend        = 0
+var float lastBrknHigh = na
+var float lastBrknLow  = na
+var int   bosUpCount   = 0
+var int   bosDownCount = 0
+
+newHighBreak = not na(shVal) and close > shVal and (na(lastBrknHigh) or shVal != lastBrknHigh)
+newLowBreak  = not na(slVal) and close < slVal and (na(lastBrknLow)  or slVal != lastBrknLow)
+bullBody     = close > open
+bearBody     = close < open
+
+chochUp   = newHighBreak and trend == -1 and bullBody and bosDownCount >= minBoS
+chochDown = newLowBreak  and trend ==  1 and bearBody and bosUpCount   >= minBoS
+bosUp     = newHighBreak and trend >= 0  and not chochUp
+bosDown   = newLowBreak  and trend <= 0  and not chochDown
+
+if chochUp or bosUp
+    trend        := 1
+    lastBrknHigh := shVal
+    bosUpCount   := chochUp ? 0 : bosUpCount + 1
+    if chochUp
+        bosDownCount := 0
+
+if chochDown or bosDown
+    trend         := -1
+    lastBrknLow   := slVal
+    bosDownCount  := chochDown ? 0 : bosDownCount + 1
+    if chochDown
+        bosUpCount := 0
+
+if showCHoCH
+    if chochUp
+        label.new(bar_index, low, "CHoCH",
+                  style=label.style_label_up, color=color.new(color.lime, 10),
+                  textcolor=color.black, size=size.small)
+    if chochDown
+        label.new(bar_index, high, "CHoCH",
+                  style=label.style_label_down, color=color.new(color.orange, 10),
+                  textcolor=color.black, size=size.small)
+
+// ─── Equal Highs / Lows ───────────────────────────────────────────────────────
+eqThresh = eqSens / 100.0
+isEQH = not na(ph) and not na(shVal) and not na(shVal2) and math.abs(shVal - shVal2) / shVal2 <= eqThresh
+isEQL = not na(pl) and not na(slVal) and not na(slVal2) and math.abs(slVal - slVal2) / slVal2 <= eqThresh
+
+var float eqHighLvl   = na
+var int   eqHighStart = na
+var line  eqHighLine  = na
+var float eqLowLvl    = na
+var int   eqLowStart  = na
+var line  eqLowLine   = na
+
+var line[] sweptHighLines = array.new<line>()
+var line[] sweptLowLines  = array.new<line>()
+
+if isEQH
+    if not na(eqHighLine) and not na(eqHighLvl)
+        line.delete(eqHighLine)
+        eqHighLine := na
+    bool lIL = shVal2 <= shVal
+    eqHighLvl   := lIL ? shVal2 : shVal
+    eqHighStart := lIL ? shBar2 : shBar
+    if showEQ and not na(eqHighStart)
+        eqHighLine := line.new(eqHighStart, eqHighLvl, bar_index, eqHighLvl,
+                               color=color.new(color.orange, 35), width=1,
+                               style=line.style_dashed, extend=extend.right)
+
+if isEQL
+    if not na(eqLowLine) and not na(eqLowLvl)
+        line.delete(eqLowLine)
+        eqLowLine := na
+    bool lIH = slVal2 >= slVal
+    eqLowLvl   := lIH ? slVal2 : slVal
+    eqLowStart := lIH ? slBar2 : slBar
+    if showEQ and not na(eqLowStart)
+        eqLowLine := line.new(eqLowStart, eqLowLvl, bar_index, eqLowLvl,
+                              color=color.new(color.aqua, 35), width=1,
+                              style=line.style_dashed, extend=extend.right)
+
+// ─── Sweep ────────────────────────────────────────────────────────────────────
+minPierce = minSweepPct / 100.0
+
+var bool  pendingShort   = false
+var float pendingShortSL = na
+var int   sweepBarShort  = na
+var bool  pendingLong    = false
+var float pendingLongSL  = na
+var int   sweepBarLong   = na
+
+highSwept = not na(eqHighLvl) and trend == 1  and high >= eqHighLvl * (1.0 + minPierce) and close < eqHighLvl
+lowSwept  = not na(eqLowLvl)  and trend == -1 and low  <= eqLowLvl  * (1.0 - minPierce) and close > eqLowLvl
+
+if highSwept
+    pendingShort   := true
+    pendingShortSL := high * (1.0 + slBuf / 100.0)
+    sweepBarShort  := bar_index
+    eqHighLvl      := na
+    if not na(eqHighLine)
+        line.set_x2(eqHighLine, bar_index)
+        line.set_extend(eqHighLine, extend.none)
+        line.set_color(eqHighLine, color.new(color.orange, 0))
+        line.set_width(eqHighLine, 2)
+        array.push(sweptHighLines, eqHighLine)
+        eqHighLine := na
+        while array.size(sweptHighLines) > 8
+            line.delete(array.shift(sweptHighLines))
+    if showEQ
+        label.new(bar_index, high, "Sweep",
+                  style=label.style_label_down, color=color.new(color.orange, 0),
+                  textcolor=color.white, size=size.tiny)
+
+if lowSwept
+    pendingLong    := true
+    pendingLongSL  := low * (1.0 - slBuf / 100.0)
+    sweepBarLong   := bar_index
+    eqLowLvl       := na
+    if not na(eqLowLine)
+        line.set_x2(eqLowLine, bar_index)
+        line.set_extend(eqLowLine, extend.none)
+        line.set_color(eqLowLine, color.new(color.aqua, 0))
+        line.set_width(eqLowLine, 2)
+        array.push(sweptLowLines, eqLowLine)
+        eqLowLine := na
+        while array.size(sweptLowLines) > 8
+            line.delete(array.shift(sweptLowLines))
+    if showEQ
+        label.new(bar_index, low, "Sweep",
+                  style=label.style_label_up, color=color.new(color.aqua, 0),
+                  textcolor=color.white, size=size.tiny)
+
+// ─── FVG ──────────────────────────────────────────────────────────────────────
+bearFVG = high < low[2]
+bullFVG = low  > high[2]
+
+var float fvgSTop = na
+var float fvgSBot = na
+var int   fvgSBar = na
+var float fvgLBot = na
+var float fvgLTop = na
+var int   fvgLBar = na
+
+if pendingShort and bearFVG
+    fvgSTop := low[2]
+    fvgSBot := high
+    fvgSBar := bar_index[1]
+
+if pendingLong and bullFVG
+    fvgLBot := high[2]
+    fvgLTop := low
+    fvgLBar := bar_index[1]
+
+if bosDown and pendingShort
+    pendingShort   := false
+    fvgSTop        := na
+    fvgSBot        := na
+    fvgSBar        := na
+    sweepBarShort  := na
+
+if bosUp and pendingLong
+    pendingLong    := false
+    fvgLBot        := na
+    fvgLTop        := na
+    fvgLBar        := na
+    sweepBarLong   := na
+
+// ─── Signale ──────────────────────────────────────────────────────────────────
+shortSig = pendingShort and chochDown
+longSig  = pendingLong  and chochUp
+
+// ─── Trade-Tracking Arrays ────────────────────────────────────────────────────
+// Für aktive Trades: Richtung, TP-Preise, Hit-Status, Visualisierungs-Objekte
+var bool[]  tdLong      = array.new<bool>()
+var float[] tdTP1       = array.new<float>()
+var float[] tdTP2       = array.new<float>()
+var float[] tdTP3       = array.new<float>()
+var bool[]  tdTP1Hit    = array.new<bool>()
+var bool[]  tdTP2Hit    = array.new<bool>()
+var bool[]  tdTP3Hit    = array.new<bool>()
+
+var box[]   tdFVGBox    = array.new<box>()
+var line[]  tdEntryLn   = array.new<line>()
+var line[]  tdSLLn      = array.new<line>()
+var line[]  tdTP1Ln     = array.new<line>()
+var line[]  tdTP2Ln     = array.new<line>()
+var line[]  tdTP3Ln     = array.new<line>()
+var label[] tdEntryLbl  = array.new<label>()
+var label[] tdSLLbl     = array.new<label>()
+var label[] tdTP1Lbl    = array.new<label>()
+var label[] tdTP2Lbl    = array.new<label>()
+var label[] tdTP3Lbl    = array.new<label>()
+
+// Älteste Trades löschen
+cleanupTrades() =>
+    while array.size(tdEntryLn) > maxTrades
+        b = array.shift(tdFVGBox)
+        if not na(b)
+            box.delete(b)
+        line.delete(array.shift(tdEntryLn))
+        line.delete(array.shift(tdSLLn))
+        line.delete(array.shift(tdTP1Ln))
+        line.delete(array.shift(tdTP2Ln))
+        line.delete(array.shift(tdTP3Ln))
+        label.delete(array.shift(tdEntryLbl))
+        label.delete(array.shift(tdSLLbl))
+        label.delete(array.shift(tdTP1Lbl))
+        label.delete(array.shift(tdTP2Lbl))
+        label.delete(array.shift(tdTP3Lbl))
+        array.shift(tdLong)
+        array.shift(tdTP1)
+        array.shift(tdTP2)
+        array.shift(tdTP3)
+        array.shift(tdTP1Hit)
+        array.shift(tdTP2Hit)
+        array.shift(tdTP3Hit)
+
+// ─── TP Hit Erkennung (jeder Bar) ─────────────────────────────────────────────
+if array.size(tdLong) > 0
+    for i = 0 to array.size(tdLong) - 1
+        isLng = array.get(tdLong, i)
+        p1    = array.get(tdTP1, i)
+        p2    = array.get(tdTP2, i)
+        p3    = array.get(tdTP3, i)
+
+        if not array.get(tdTP1Hit, i) and not na(p1)
+            if (isLng and high >= p1) or (not isLng and low <= p1)
+                array.set(tdTP1Hit, i, true)
+                lbl = array.get(tdTP1Lbl, i)
+                if not na(lbl)
+                    label.set_text(lbl, "TP1: " + str.tostring(p1, format.mintick) + " ✓")
+                    label.set_color(lbl, color.new(color.lime, 0))
+                label.new(bar_index, p1, "×", style=label.style_none,
+                          textcolor=color.new(color.lime, 0), size=size.normal)
+
+        if not array.get(tdTP2Hit, i) and not na(p2)
+            if (isLng and high >= p2) or (not isLng and low <= p2)
+                array.set(tdTP2Hit, i, true)
+                lbl = array.get(tdTP2Lbl, i)
+                if not na(lbl)
+                    label.set_text(lbl, "TP2: " + str.tostring(p2, format.mintick) + " ✓")
+                    label.set_color(lbl, color.new(color.lime, 0))
+                label.new(bar_index, p2, "×", style=label.style_none,
+                          textcolor=color.new(color.lime, 0), size=size.normal)
+
+        if not array.get(tdTP3Hit, i) and not na(p3)
+            if (isLng and high >= p3) or (not isLng and low <= p3)
+                array.set(tdTP3Hit, i, true)
+                lbl = array.get(tdTP3Lbl, i)
+                if not na(lbl)
+                    label.set_text(lbl, "TP3: " + str.tostring(p3, format.mintick) + " ✓")
+                    label.set_color(lbl, color.new(color.lime, 0))
+                    ln = array.get(tdTP3Ln, i)
+                    if not na(ln)
+                        line.set_style(ln, line.style_solid)
+                label.new(bar_index, p3, "×", style=label.style_none,
+                          textcolor=color.new(color.lime, 0), size=size.normal)
+
+// ─── Neuen Trade einzeichnen ─────────────────────────────────────────────────
+extBars = 60
+
+addTrade(isLong, entryP, slP, tp1P, tp2P, tp3P, slFrom, hasFVG, fvgT, fvgBt, fvgBr) =>
+    pFmt(p) => str.tostring(p, format.mintick)
+
+    // FVG Box
+    newBox = hasFVG and showFVG and not na(fvgBr) ?
+             box.new(fvgBr - 1, fvgT, bar_index + extBars, fvgBt,
+                     bgcolor      = isLong ? colFVGl : colFVGs,
+                     border_color = isLong ? color.new(color.lime, 50) : color.new(color.red, 50),
+                     border_width = 1) : na
+
+    // Linien
+    eLn  = showTrade ? line.new(bar_index, entryP, bar_index + extBars, entryP,
+                                color=colEntry, width=1) : na
+    sLn  = showTrade ? line.new(slFrom, slP, bar_index + extBars, slP,
+                                color=colSL, width=1, style=line.style_solid) : na
+    t1Ln = showTrade ? line.new(bar_index, tp1P, bar_index + extBars, tp1P,
+                                color=colTP, width=1, style=line.style_dashed) : na
+    t2Ln = showTrade ? line.new(bar_index, tp2P, bar_index + extBars, tp2P,
+                                color=colTP, width=1, style=line.style_dashed) : na
+    t3Ln = showTrade ? line.new(bar_index, tp3P, bar_index + extBars, tp3P,
+                                color=colTP, width=1, style=line.style_dashed) : na
+
+    // Labels (rechts an den Linien)
+    eLbl  = showTrade ? label.new(bar_index + extBars, entryP,
+                                  "Entry: " + pFmt(entryP),
+                                  style=label.style_label_left, color=colEntry,
+                                  textcolor=color.white, size=size.tiny) : na
+    sLbl  = showTrade ? label.new(bar_index + extBars, slP,
+                                  "SL: " + pFmt(slP),
+                                  style=label.style_label_left, color=colSL,
+                                  textcolor=color.white, size=size.tiny) : na
+    t1Lbl = showTrade ? label.new(bar_index + extBars, tp1P,
+                                  "TP1: " + pFmt(tp1P),
+                                  style=label.style_label_left,
+                                  color=color.new(color.lime, 30),
+                                  textcolor=color.white, size=size.tiny) : na
+    t2Lbl = showTrade ? label.new(bar_index + extBars, tp2P,
+                                  "TP2: " + pFmt(tp2P),
+                                  style=label.style_label_left,
+                                  color=color.new(color.lime, 30),
+                                  textcolor=color.white, size=size.tiny) : na
+    t3Lbl = showTrade ? label.new(bar_index + extBars, tp3P,
+                                  "TP3: " + pFmt(tp3P),
+                                  style=label.style_label_left,
+                                  color=color.new(color.lime, 10),
+                                  textcolor=color.black, size=size.tiny) : na
+
+    // In Arrays eintragen
+    array.push(tdLong,     isLong)
+    array.push(tdTP1,      tp1P)
+    array.push(tdTP2,      tp2P)
+    array.push(tdTP3,      tp3P)
+    array.push(tdTP1Hit,   false)
+    array.push(tdTP2Hit,   false)
+    array.push(tdTP3Hit,   false)
+    array.push(tdFVGBox,   newBox)
+    array.push(tdEntryLn,  eLn)
+    array.push(tdSLLn,     sLn)
+    array.push(tdTP1Ln,    t1Ln)
+    array.push(tdTP2Ln,    t2Ln)
+    array.push(tdTP3Ln,    t3Ln)
+    array.push(tdEntryLbl, eLbl)
+    array.push(tdSLLbl,    sLbl)
+    array.push(tdTP1Lbl,   t1Lbl)
+    array.push(tdTP2Lbl,   t2Lbl)
+    array.push(tdTP3Lbl,   t3Lbl)
+    cleanupTrades()
+
+if shortSig
+    hasFVG = not na(fvgSTop) and not na(fvgSBot)
+    entryS = hasFVG ? (fvgSTop + fvgSBot) / 2.0 : close
+    sl_s   = na(pendingShortSL) ? high * (1.0 + slBuf / 100.0) : pendingShortSL
+    risk   = math.max(sl_s - entryS, entryS * 0.0005)
+    slFrom = na(sweepBarShort) ? bar_index : sweepBarShort
+
+    addTrade(false, entryS, sl_s,
+             entryS - risk * tp1R,
+             entryS - risk * tp2R,
+             entryS - risk * tp3R,
+             slFrom, hasFVG, fvgSTop, fvgSBot, fvgSBar)
+
+    pendingShort  := false
+    fvgSTop       := na
+    fvgSBot       := na
+    fvgSBar       := na
+    sweepBarShort := na
+
+if longSig
+    hasFVG = not na(fvgLBot) and not na(fvgLTop)
+    entryL = hasFVG ? (fvgLBot + fvgLTop) / 2.0 : close
+    sl_l   = na(pendingLongSL) ? low * (1.0 - slBuf / 100.0) : pendingLongSL
+    risk   = math.max(entryL - sl_l, entryL * 0.0005)
+    slFrom = na(sweepBarLong) ? bar_index : sweepBarLong
+
+    addTrade(true, entryL, sl_l,
+             entryL + risk * tp1R,
+             entryL + risk * tp2R,
+             entryL + risk * tp3R,
+             slFrom, hasFVG, fvgLTop, fvgLBot, fvgLBar)
+
+    pendingLong  := false
+    fvgLBot      := na
+    fvgLTop      := na
+    fvgLBar      := na
+    sweepBarLong := na
+
+// ─── BoS + Entry Marker ───────────────────────────────────────────────────────
+plotshape(showBoS and bosUp,   "BoS ▲", shape.triangleup,   location.belowbar,
+          color.new(color.teal,   30), size=size.tiny)
+plotshape(showBoS and bosDown, "BoS ▼", shape.triangledown, location.abovebar,
+          color.new(color.maroon, 30), size=size.tiny)
+plotshape(longSig,  "LONG",  shape.triangleup,   location.belowbar,
+          color.new(color.green, 0), size=size.normal)
+plotshape(shortSig, "SHORT", shape.triangledown, location.abovebar,
+          color.new(color.red,   0), size=size.normal)
